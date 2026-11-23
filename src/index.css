@@ -4,23 +4,73 @@
 
 :root {
   color-scheme: dark;
+  --hud-surface: rgba(14, 10, 28, 0.64);
+  --hud-border: rgba(255, 255, 255, 0.12);
+  --hud-accent: #a78bfa;
+}
+
+html,
+body,
+#root {
+  height: 100%;
 }
 
 body {
-  @apply min-h-screen bg-slate-950 text-slate-100 antialiased;
-  background-image:
-    radial-gradient(60rem 60rem at 8% -12%, rgba(129, 140, 248, 0.18), transparent 60%),
-    radial-gradient(50rem 50rem at 100% 0%, rgba(244, 114, 182, 0.12), transparent 55%),
-    radial-gradient(45rem 45rem at 50% 120%, rgba(56, 189, 248, 0.12), transparent 60%);
-  background-attachment: fixed;
+  @apply overflow-hidden bg-black text-slate-100 antialiased;
+}
+
+canvas {
+  outline: none;
+  touch-action: none;
+}
+
+::selection {
+  background-color: rgba(167, 139, 250, 0.35);
 }
 
 @layer components {
-  .glass-panel {
-    @apply rounded-2xl border border-white/10 bg-white/[0.04] shadow-xl shadow-black/40 backdrop-blur;
+  .hud-panel {
+    @apply rounded-2xl border backdrop-blur-xl;
+    background-color: var(--hud-surface);
+    border-color: var(--hud-border);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 24px 60px -22px rgba(0, 0, 0, 0.85);
+  }
+
+  .hud-chip {
+    @apply inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-2 text-xs text-slate-300 backdrop-blur-xl transition hover:text-white;
+    background-color: var(--hud-surface);
+    border-color: var(--hud-border);
+  }
+
+  .hud-chip:hover {
+    background-color: rgba(255, 255, 255, 0.08);
   }
 
   .field {
-    @apply w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-500 focus:border-indigo-400/60 focus:bg-white/[0.07] focus:ring-2 focus:ring-indigo-400/20;
+    @apply w-full rounded-xl border px-3 py-2 text-sm text-slate-100 outline-none transition placeholder:text-slate-500;
+    background-color: rgba(0, 0, 0, 0.28);
+    border-color: var(--hud-border);
+  }
+
+  .field:focus {
+    border-color: var(--hud-accent);
+    background-color: rgba(255, 255, 255, 0.06);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--hud-accent) 18%, transparent);
+  }
+
+  .scroll-thin {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+  }
+
+  .scroll-thin::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .scroll-thin::-webkit-scrollbar-thumb {
+    background-color: rgba(148, 163, 184, 0.3);
+    border-radius: 999px;
   }
 }

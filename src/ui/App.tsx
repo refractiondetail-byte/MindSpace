@@ -1,79 +1,173 @@
-import { useMemo, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { listThoughts } from '../core/repository';
 import { filterThoughts } from '../core/search';
-import type { Region } from '../core/types';
-import { AddNodeForm } from './components/AddNodeForm';
-import { NodeList } from './components/NodeList';
-import { RegionFilter } from './components/RegionFilter';
+import type { Region, ThoughtNode } from '../core/types';
+import { WorldCanvas } from '../worlds/WorldCanvas';
+import { DEFAULT_WORLD_THEME, getWorldTheme, type WorldTheme } from '../worlds/themes';
+import { NodeInspector } from './components/NodeInspector';
+import { QuickCapture } from './components/QuickCapture';
+import { SearchPanel } from './components/SearchPanel';
+import { ThemeSwitcher } from './components/ThemeSwitcher';
 
 export default function App() {
   const thoughts = useLiveQuery(() => listThoughts(), []);
+  const [themeId, setThemeId] = useState<WorldTheme>(DEFAULT_WORLD_THEME);
   const [query, setQuery] = useState('');
   const [region, setRegion] = useState<Region | 'all'>('all');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [focus, setFocus] = useState<{ nodeId: string | null; token: number } | null>(null);
+  const focusToken = useRef(0);
 
-  const visible = useMemo(
-    () =>
-      filterThoughts(thoughts ?? [], {
-        query,
-        regions: region === 'all' ? [] : [region],
-      }),
-    [thoughts, query, region],
+  const nodes = useMemo(() => thoughts ?? [], [thoughts]);
+  const theme = getWorldTheme(themeId);
+
+  const matches = useMemo(
+    () => filterThoughts(nodes, { query, regions: region === 'all' ? [] : [region] }),
+    [nodes, query, region],
+  );
+
+  const filtersActive = query.trim().length > 0 || region !== 'all';
+  const activeIds = useMemo(
+    () => (filtersActive ? new Set(matches.map((node) => node.id)) : null),
+    [filtersActive, matches],
   );
 
   const counts = useMemo(() => {
-    const base: Record<Region, number> = { prefrontal: 0, hippocampus: 0, limbic: 0, parietal: 0 };
-    for (const thought of thoughts ?? []) base[thought.region] += 1;
+    const base: Record<Region, number> = {
+      prefrontal: 0,
+      hippocampus: 0,
+      limbic: 0,
+      parietal: 0,
+    };
+    for (const node of nodes) base[node.region] += 1;
     return base;
-  }, [thoughts]);
+  }, [nodes]);
 
-  const total = thoughts?.length ?? 0;
+  const selected = useMemo(
+    () => nodes.find((node) => node.id === selectedId) ?? null,
+    [nodes, selectedId],
+  );
+
+  const focusNode = useCallback((nodeId: string) => {
+    focusToken.current += 1;
+    setSelectedId(nodeId);
+    setFocus({ nodeId, token: focusToken.current });
+  }, []);
+
+  const recenter = useCallback(() => {
+    focusToken.current += 1;
+    setFocus({ nodeId: null, token: focusToken.current });
+  }, []);
+
+  const handlePick = useCallback(
+    (node: ThoughtNode) => {
+      focusNode(node.id);
+    },
+    [focusNode],
+  );
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') setSelectedId(null);
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const rootStyle: CSSProperties = {
+    background: theme.background,
+    ...({
+      '--hud-surface': theme.hud.surface,
+      '--hud-border': theme.hud.border,
+      '--hud-accent': theme.hud.accent,
+    } as CSSProperties),
+  };
+
   const loading = thoughts === undefined;
+  const total = nodes.length;
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-6 px-4 py-8 sm:px-6">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.35em] text-indigo-300/80">MindSpace · Milestone 1</p>
-          <h1 className="mt-2 text-3xl font-semibold text-white">Your second brain, stored locally</h1>
-          <p className="mt-1 text-sm text-slate-400">
-            Dexie (IndexedDB) · {loading ? 'loading…' : `${total} ${total === 1 ? 'node' : 'nodes'}`} · nothing
-            leaves this device
-          </p>
+    <main className="relative h-[100dvh] w-full overflow-hidden" style={rootStyle}>
+      <div className="absolute inset-0">
+        <WorldCanvas
+          thoughts={nodes}
+          themeId={themeId}
+          selectedId={selectedId}
+          activeIds={activeIds}
+          focus={focus}
+          onSelect={focusNode}
+        />
+      </div>
+
+      <div className="pointer-events-none absolute inset-0 z-10 bg-[radial-gradient(130%_120%_at_50%_50%,transparent_58%,rgba(0,0,0,0.5)_100%)]" />
+
+      <header className="pointer-events-none absolute inset-x-0 top-0 z-20 grid gap-2 p-3 sm:p-4 md:grid-cols-[minmax(0,1fr)_minmax(0,460px)_minmax(0,1fr)] md:items-start">
+        <div className="flex items-start justify-between gap-2 md:justify-start">
+          <div className="hud-panel pointer-events-auto flex items-center gap-2.5 px-3 py-2">
+            <span className="grid h-7 w-7 place-items-center rounded-full bg-white/10 text-sm">
+              🧠
+            </span>
+            <div className="leading-tight">
+              <p className="text-sm font-semibold tracking-tight text-white">MindSpace</p>
+              <p className="text-[10px] text-slate-400">
+                {loading
+                  ? 'opening local store…'
+                  : `${total} ${total === 1 ? 'node' : 'nodes'} · local-only`}
+              </p>
+            </div>
+          </div>
+          <div className="pointer-events-auto md:hidden">
+            <ThemeSwitcher value={themeId} onChange={setThemeId} />
+          </div>
         </div>
-        <div className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-[11px] text-slate-400">
-          Showing <span className="text-slate-200">{visible.length}</span>
+
+        <SearchPanel
+          className="pointer-events-auto"
+          query={query}
+          onQueryChange={setQuery}
+          region={region}
+          onRegionChange={setRegion}
+          matches={matches}
+          counts={counts}
+          total={total}
+          onPick={handlePick}
+        />
+
+        <div className="pointer-events-auto hidden items-start justify-end gap-2 md:flex">
+          <button
+            type="button"
+            onClick={recenter}
+            className="hud-chip"
+            title="Recenter the camera"
+          >
+            ⌖ <span className="hidden lg:inline">Recenter</span>
+          </button>
+          <ThemeSwitcher value={themeId} onChange={setThemeId} />
         </div>
       </header>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
-        <section className="lg:sticky lg:top-6 lg:self-start">
-          <AddNodeForm />
-        </section>
-
-        <section className="flex min-w-0 flex-col gap-4">
-          <div className="glass-panel flex flex-col gap-3 p-4">
-            <div className="relative">
-              <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm text-slate-500">
-                🔍
-              </span>
-              <label className="block">
-                <span className="sr-only">Search nodes</span>
-                <input
-                  className="field pl-9"
-                  type="search"
-                  placeholder="Search titles, content, tags…"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                />
-              </label>
-            </div>
-            <RegionFilter value={region} onChange={setRegion} counts={counts} total={total} />
-          </div>
-
-          <NodeList thoughts={visible} isLoading={loading} hasNodes={total > 0} />
-        </section>
+      <div className="pointer-events-auto absolute bottom-3 left-3 z-20 w-[min(360px,calc(100vw-1.5rem))] sm:bottom-4 sm:left-4">
+        <QuickCapture onSaved={(node) => focusNode(node.id)} />
       </div>
+
+      <p className="pointer-events-none absolute bottom-5 left-1/2 z-10 hidden -translate-x-1/2 rounded-full border border-white/10 bg-black/30 px-3 py-1.5 text-[11px] text-slate-400 backdrop-blur lg:block">
+        drag to orbit · scroll to zoom · click a node to fly in
+      </p>
+
+      <NodeInspector
+        node={selected}
+        thoughts={nodes}
+        onClose={() => setSelectedId(null)}
+        onFocus={focusNode}
+      />
     </main>
   );
 }
