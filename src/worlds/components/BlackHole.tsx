@@ -138,10 +138,62 @@ const DISK_FRAGMENT = /* glsl */ `
   }
 `;
 
+const PHOTON_VERTEX = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const PHOTON_FRAGMENT = /* glsl */ `
+  uniform float uTime;
+  varying vec2 vUv;
+
+  void main() {
+    vec2 p = vUv - 0.5;
+    float r = length(p) * 2.0;
+    float angle = atan(p.y, p.x);
+    float ring = smoothstep(0.82, 0.90, r) * smoothstep(1.08, 0.96, r);
+    float flow = 0.5 + 0.5 * sin(angle * 8.0 - uTime * 4.0);
+    float pulse = 0.75 + 0.25 * sin(uTime * 2.4);
+    float bend = 0.5 + 0.5 * sin(angle * 3.0 + uTime * 1.6);
+    vec3 base = vec3(1.0, 0.88, 0.62);
+    vec3 hot = vec3(1.0, 1.0, 0.95);
+    vec3 color = mix(base, hot, flow * bend);
+    float alpha = ring * (0.35 + 0.65 * flow) * pulse;
+    gl_FragColor = vec4(color * (1.2 + 0.8 * flow), clamp(alpha, 0.0, 1.0));
+  }
+`;
+
+const LENS_VERTEX = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const LENS_FRAGMENT = /* glsl */ `
+  uniform float uTime;
+  varying vec2 vUv;
+
+  void main() {
+    vec2 p = vUv - 0.5;
+    float r = length(p) * 2.0;
+    float angle = atan(p.y, p.x);
+    float ring = smoothstep(0.90, 0.96, r) * smoothstep(1.12, 1.0, r);
+    float wave = 0.5 + 0.5 * sin(angle * 5.0 + uTime * 2.0);
+    float pulse = 0.6 + 0.4 * sin(uTime * 1.7 + angle * 2.0);
+    vec3 color = vec3(0.75, 0.85, 1.0);
+    float alpha = ring * wave * pulse * 0.45;
+    gl_FragColor = vec4(color, clamp(alpha, 0.0, 1.0));
+  }
+`;
+
 /**
- * Pitch-black horizon core, bright white-gold inner photon ring, and three
- * thick turbulent tilted accretion-disk layers that orbit at different speeds
- * so the structure keeps swirling as the camera or the clock moves.
+ * Pitch-black horizon core, bright white-gold animated photon ring, and a
+ * fainter lensing ring that wobbles to suggest bending light.
  */
 interface BlackHoleProps {
   onSelect?: () => void;
@@ -149,15 +201,27 @@ interface BlackHoleProps {
 
 export function BlackHole({ onSelect }: BlackHoleProps = {}) {
   const uniforms = useMemo(() => ({ uTime: { value: 0 } }), []);
+  const photonUniforms = useMemo(() => ({ uTime: { value: 0 } }), []);
+  const lensUniforms = useMemo(() => ({ uTime: { value: 0 } }), []);
   const groupRef = useRef<THREE.Group>(null);
+  const photonRef = useRef<THREE.Mesh>(null);
+  const lensRef = useRef<THREE.Mesh>(null);
   const [hovered, setHovered] = useState(false);
 
   useFrame((state, delta) => {
     uniforms.uTime.value = state.clock.elapsedTime;
+    photonUniforms.uTime.value = state.clock.elapsedTime;
+    lensUniforms.uTime.value = state.clock.elapsedTime;
     if (groupRef.current) {
       const target = hovered ? 1.18 : 1;
       const next = THREE.MathUtils.damp(groupRef.current.scale.x, target, 8, delta);
       groupRef.current.scale.setScalar(next);
+    }
+    if (photonRef.current) {
+      photonRef.current.rotation.z = state.clock.elapsedTime * 0.6;
+    }
+    if (lensRef.current) {
+      lensRef.current.rotation.z = -state.clock.elapsedTime * 0.35;
     }
   });
 
@@ -198,16 +262,34 @@ export function BlackHole({ onSelect }: BlackHoleProps = {}) {
         <meshBasicMaterial color="#000000" />
       </mesh>
 
-      {/* Crisp photon-ring outline. */}
+      {/* Animated photon ring that suggests light bending around the horizon. */}
       <Billboard>
-        <mesh raycast={NO_RAYCAST} renderOrder={4}>
-          <ringGeometry args={[2.95, 3.08, 96]} />
-          <meshBasicMaterial
-            color="#fff1d6"
+        <mesh ref={photonRef} raycast={NO_RAYCAST} renderOrder={4}>
+          <ringGeometry args={[2.95, 3.12, 128]} />
+          <shaderMaterial
+            uniforms={photonUniforms}
+            vertexShader={PHOTON_VERTEX}
+            fragmentShader={PHOTON_FRAGMENT}
             transparent
-            opacity={0.85}
-            side={THREE.DoubleSide}
             depthWrite={false}
+            side={THREE.DoubleSide}
+            blending={THREE.AdditiveBlending}
+            toneMapped={false}
+          />
+        </mesh>
+      </Billboard>
+
+      {/* Fainter lensing ring that wobbles around the photon ring. */}
+      <Billboard>
+        <mesh ref={lensRef} raycast={NO_RAYCAST} renderOrder={3}>
+          <ringGeometry args={[3.3, 3.6, 128]} />
+          <shaderMaterial
+            uniforms={lensUniforms}
+            vertexShader={LENS_VERTEX}
+            fragmentShader={LENS_FRAGMENT}
+            transparent
+            depthWrite={false}
+            side={THREE.DoubleSide}
             blending={THREE.AdditiveBlending}
             toneMapped={false}
           />
