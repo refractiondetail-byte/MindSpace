@@ -98,16 +98,16 @@ export function AuthPanel({ onUserChange, status }: AuthPanelProps) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex items-center gap-2">
+    <form onSubmit={handleSubmit} className="flex flex-wrap items-center gap-2">
       <input
-        className="field w-28 px-2 py-1 text-[10px]"
+        className="field w-24 px-2 py-1 text-[10px] sm:w-28"
         placeholder="username"
         value={username}
         onChange={(event) => setUsername(event.target.value)}
         autoComplete="username"
       />
       <input
-        className="field w-28 px-2 py-1 text-[10px]"
+        className="field w-24 px-2 py-1 text-[10px] sm:w-28"
         type="password"
         placeholder="password"
         value={password}

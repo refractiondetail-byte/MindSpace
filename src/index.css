@@ -73,6 +73,14 @@ canvas {
   cursor: pointer;
 }
 
+.scrollbar-none {
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
 @layer components {
   .hud-panel {
     @apply rounded-2xl border backdrop-blur-xl;

@@ -213,10 +213,10 @@ export default function App() {
         <div className="pointer-events-none absolute inset-0 z-10 bg-[radial-gradient(130%_120%_at_50%_50%,transparent_58%,rgba(0,0,0,0.5)_100%)]" />
       )}
 
-      <header className="pointer-events-none absolute left-3 top-3 z-20 flex items-start gap-2">
+      <div className="pointer-events-auto absolute inset-x-0 top-0 z-20 flex items-center gap-2 overflow-x-auto px-3 py-2 touch-pan-x scrollbar-none">
         {mode === 'world' && (
           <SearchPanel
-            className="pointer-events-auto"
+            className="shrink-0"
             query={query}
             clusterNames={clusterNames}
             onRenameCluster={renameCluster}
@@ -229,10 +229,7 @@ export default function App() {
             onPick={handlePick}
           />
         )}
-      </header>
-
-      {mode === 'world' && (
-        <div className="pointer-events-auto absolute left-1/2 top-3 z-20 -translate-x-1/2">
+        {mode === 'world' && (
           <input
             type="range"
             min={-60}
@@ -240,18 +237,15 @@ export default function App() {
             step={1}
             value={Math.round((tilt * 180) / Math.PI)}
             onChange={(event) => setTilt((Number(event.target.value) * Math.PI) / 180)}
-            className="galaxy-tilt w-48"
+            className="galaxy-tilt shrink-0 w-32 sm:w-48"
             title="Tilt galaxy"
           />
-        </div>
-      )}
-
-      <div className="pointer-events-auto absolute right-3 top-3 z-20 flex items-start justify-end gap-2">
+        )}
         {mode === 'world' && (
           <button
             type="button"
             onClick={recenter}
-            className="hud-chip"
+            className="hud-chip shrink-0"
             title="Recenter the camera"
           >
             ⌖ <span className="hidden lg:inline">Recenter</span>
@@ -359,7 +353,7 @@ function HomeDashboard({
       <aside
         role="dialog"
         aria-label="Home telemetry dashboard"
-        className="pointer-events-auto hud-panel absolute left-1/2 top-24 z-20 w-full max-w-[1100px] -translate-x-1/2 p-4 sm:static sm:inset-0 sm:max-w-none sm:translate-x-0 sm:flex sm:flex-col"
+        className="pointer-events-auto hud-panel absolute left-1/2 top-24 z-20 w-full max-w-[1100px] -translate-x-1/2 p-4 touch-pan-y overscroll-contain sm:static sm:inset-0 sm:max-w-none sm:translate-x-0 sm:flex sm:flex-col"
       >
         <div className="mb-3">
           <SearchPanel
