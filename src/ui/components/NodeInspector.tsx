@@ -1,17 +1,32 @@
 import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { deleteThought, getAttachmentBlob } from '../../core/repository';
 import { REGION_META, type Attachment, type ThoughtNode } from '../../core/types';
+import { loadClusterNames } from '../../lib/clusterNames';
+import { ImageViewer } from './ImageViewer';
+import { TextViewer } from './TextViewer';
 import { formatBytes, formatDate } from '../format';
+import { relativeTime } from '../time';
 
 interface NodeInspectorProps {
   node: ThoughtNode | null;
   thoughts: ThoughtNode[];
+  /** Last time this node was opened, from the local visit tracker. */
+  touchedAt: string | null;
   onClose: () => void;
   onFocus: (id: string) => void;
 }
 
-export function NodeInspector({ node, thoughts, onClose, onFocus }: NodeInspectorProps) {
+export function NodeInspector({
+  node,
+  thoughts,
+  touchedAt,
+  onClose,
+  onFocus,
+}: NodeInspectorProps) {
+  const [viewers, setViewers] = useState<Array<{ id: string; url: string; name: string }>>([]);
+  const [textWindows, setTextWindows] = useState<Array<{ id: string; attachment: Attachment }>>([]);
   const byId = useMemo(() => new Map(thoughts.map((item) => [item.id, item])), [thoughts]);
 
   const linked = node
@@ -64,7 +79,7 @@ export function NodeInspector({ node, thoughts, onClose, onFocus }: NodeInspecto
                       className="h-1.5 w-1.5 rounded-full"
                       style={{ backgroundColor: REGION_META[node.region].accent }}
                     />
-                    {REGION_META[node.region].label}
+                    {loadClusterNames()[node.region] ?? REGION_META[node.region].label}
                   </span>
                   <span className="rounded-full bg-white/5 px-2 py-0.5 text-[10px] capitalize text-slate-400">
                     {node.type}
@@ -74,7 +89,12 @@ export function NodeInspector({ node, thoughts, onClose, onFocus }: NodeInspecto
                 <h2 className="mt-2 text-lg font-semibold leading-snug text-white">
                   {node.title}
                 </h2>
-                <p className="mt-1 text-[11px] text-slate-500">{formatDate(node.createdAt)}</p>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  {formatDate(node.createdAt)} ·{' '}
+                  <span className="text-slate-400">
+                    {touchedAt ? `touched ${relativeTime(touchedAt)}` : 'not opened yet'}
+                  </span>
+                </p>
               </div>
               <button
                 type="button"
@@ -114,7 +134,21 @@ export function NodeInspector({ node, thoughts, onClose, onFocus }: NodeInspecto
                   <ul className="mt-1.5 flex flex-wrap gap-2">
                     {node.attachments.map((attachment) => (
                       <li key={attachment.id}>
-                        <AttachmentTile attachment={attachment} />
+                        <AttachmentTile
+                          attachment={attachment}
+                          onView={(url, name) =>
+                            setViewers((current) => [
+                              ...current,
+                              { id: `${attachment.id}-${Date.now()}`, url, name },
+                            ])
+                          }
+                          onViewText={(attachment) =>
+                            setTextWindows((current) => [
+                              ...current,
+                              { id: `${attachment.id}-${Date.now()}`, attachment },
+                            ])
+                          }
+                        />
                       </li>
                     ))}
                   </ul>
@@ -166,6 +200,31 @@ export function NodeInspector({ node, thoughts, onClose, onFocus }: NodeInspecto
           </>
         )}
       </aside>
+
+      {createPortal(
+        <>
+          {viewers.map((viewer) => (
+            <ImageViewer
+              key={viewer.id}
+              url={viewer.url}
+              name={viewer.name}
+              onClose={() =>
+                setViewers((current) => current.filter((item) => item.id !== viewer.id))
+              }
+            />
+          ))}
+          {textWindows.map((window) => (
+            <TextViewer
+              key={window.id}
+              attachment={window.attachment}
+              onClose={() =>
+                setTextWindows((current) => current.filter((item) => item.id !== window.id))
+              }
+            />
+          ))}
+        </>,
+        document.body,
+      )}
     </div>
   );
 }
@@ -201,7 +260,7 @@ function ConnectionList({
                 <span className="min-w-0 flex-1 truncate text-xs text-slate-200">
                   {node.title}
                 </span>
-                <span className="shrink-0 text-[10px] text-slate-500">{meta.label}</span>
+                <span className="shrink-0 text-[10px] text-slate-500">{loadClusterNames()[node.region] ?? meta.label}</span>
               </button>
             </li>
           );
@@ -226,7 +285,15 @@ function MoodBadge({ score }: { score: number }) {
   );
 }
 
-function AttachmentTile({ attachment }: { attachment: Attachment }) {
+function AttachmentTile({
+  attachment,
+  onView,
+  onViewText,
+}: {
+  attachment: Attachment;
+  onView?: (url: string, name: string) => void;
+  onViewText?: (attachment: Attachment) => void;
+}) {
   const blob = useLiveQuery(() => getAttachmentBlob(attachment.id), [attachment.id]);
   const [url, setUrl] = useState<string | null>(null);
 
@@ -242,28 +309,52 @@ function AttachmentTile({ attachment }: { attachment: Attachment }) {
 
   if (attachment.kind === 'image') {
     return url ? (
-      <img
-        src={url}
-        alt={attachment.name}
+      <button
+        type="button"
+        onClick={() => onView?.(url, attachment.name)}
         title={`${attachment.name} · ${formatBytes(attachment.size)}`}
-        className="h-20 w-20 rounded-lg object-cover ring-1 ring-white/10"
-      />
+        className="h-20 w-20 overflow-hidden rounded-lg ring-1 ring-white/10 transition hover:ring-indigo-400/60"
+      >
+        <img src={url} alt={attachment.name} className="h-full w-full object-cover" />
+      </button>
     ) : (
       <div className="h-20 w-20 animate-pulse rounded-lg bg-white/5" />
     );
   }
 
   return (
-    <a
-      href={url ?? undefined}
-      download={attachment.name}
-      className={`inline-flex max-w-[220px] items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-xs ${
-        url ? 'text-slate-200 hover:border-indigo-400/40' : 'text-slate-500'
-      }`}
-    >
+    <div className="inline-flex max-w-[220px] items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-xs text-slate-200">
       <span>📄</span>
       <span className="min-w-0 truncate">{attachment.name}</span>
       <span className="shrink-0 text-[10px] text-slate-500">{formatBytes(attachment.size)}</span>
-    </a>
+      {onViewText && (
+        <button
+          type="button"
+          onClick={() => onViewText(attachment)}
+          className="shrink-0 rounded-md border border-white/10 px-1.5 py-0.5 text-[10px] text-slate-300 hover:text-white"
+        >
+          View
+        </button>
+      )}
+      {/^https?:\/\//i.test(attachment.name.trim()) && (
+        <a
+          href={attachment.name.trim()}
+          target="_blank"
+          rel="noreferrer"
+          className="shrink-0 rounded-md border border-white/10 px-1.5 py-0.5 text-[10px] text-slate-300 hover:text-white"
+        >
+          Open
+        </a>
+      )}
+      {url && (
+        <a
+          href={url}
+          download={attachment.name}
+          className="shrink-0 text-[10px] text-slate-400 hover:text-white"
+        >
+          ↓
+        </a>
+      )}
+    </div>
   );
 }

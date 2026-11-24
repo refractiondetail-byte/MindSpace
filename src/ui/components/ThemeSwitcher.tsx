@@ -27,7 +27,7 @@ export function ThemeSwitcher({ value, onChange }: ThemeSwitcherProps) {
               className="h-2 w-2 shrink-0 rounded-full"
               style={{
                 backgroundColor: theme.swatch,
-                boxShadow: active ? `0 0 8px ${theme.swatch}` : undefined,
+                boxShadow: active ? `0 0 10px ${theme.swatch}, 0 0 18px ${theme.swatch}` : '0 0 6px rgba(0,0,0,0.6)',
               }}
             />
             <span className="hidden sm:inline">{theme.label}</span>

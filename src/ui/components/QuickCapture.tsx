@@ -20,9 +20,11 @@ import { formatBytes } from '../format';
 
 interface QuickCaptureProps {
   onSaved?: (node: ThoughtNode) => void;
+  /** Increment to open and focus the composer from elsewhere in the HUD. */
+  openSignal?: number;
 }
 
-export function QuickCapture({ onSaved }: QuickCaptureProps) {
+export function QuickCapture({ onSaved, openSignal = 0 }: QuickCaptureProps) {
   const [open, setOpen] = useState(
     () => typeof window !== 'undefined' && window.innerWidth >= 768,
   );
@@ -37,6 +39,16 @@ export function QuickCapture({ onSaved }: QuickCaptureProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (openSignal === 0) return;
+    setOpen(true);
+    const frame = window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [openSignal]);
 
   async function handleSubmit(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
@@ -167,6 +179,7 @@ export function QuickCapture({ onSaved }: QuickCaptureProps) {
           </div>
 
           <textarea
+            ref={textareaRef}
             className="field resize-none"
             rows={2}
             value={content}

@@ -28,6 +28,51 @@ canvas {
   background-color: rgba(167, 139, 250, 0.35);
 }
 
+.galaxy-tilt {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  height: 16px;
+}
+
+.galaxy-tilt::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.galaxy-tilt::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: -8px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #fff3d6 0%, #1a1208 38%, #000000 70%);
+  box-shadow:
+    0 0 0 2px rgba(255, 241, 214, 0.55),
+    0 0 14px rgba(255, 170, 70, 0.45);
+  cursor: pointer;
+}
+
+.galaxy-tilt::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.galaxy-tilt::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #fff3d6 0%, #1a1208 38%, #000000 70%);
+  box-shadow:
+    0 0 0 2px rgba(255, 241, 214, 0.55),
+    0 0 14px rgba(255, 170, 70, 0.45);
+  cursor: pointer;
+}
+
 @layer components {
   .hud-panel {
     @apply rounded-2xl border backdrop-blur-xl;
