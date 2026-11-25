@@ -121,6 +121,7 @@ interface StarNodeProps {
   seed: string;
   region: Region;
   accent: string;
+  color?: string;
   dimmed: boolean;
   hovered: boolean;
   selected: boolean;
@@ -131,29 +132,36 @@ export function StarNode({
   seed,
   region,
   accent,
+  color,
   dimmed,
   hovered,
   selected,
   emphasized,
 }: StarNodeProps) {
   const material = useRef<THREE.ShaderMaterial | null>(null);
+  const timeRef = useRef(0);
 
   const look = useMemo(() => {
     const random = mulberry32(hashString(seed));
     const family = REGION_STAR[region];
     const white = new THREE.Color('#ffffff');
+    const tint = color ? new THREE.Color(color) : null;
     const coreColor = new THREE.Color(family.core).lerp(
       white,
       0.18 + random() * 0.3,
     );
+    if (tint) coreColor.lerp(tint, 0.35);
     const haloColor = new THREE.Color(family.halo).lerp(
       coreColor,
       0.2 + random() * 0.3,
     );
-    const ringColor = new THREE.Color(accent).lerp(white, 0.55);
+    if (tint) haloColor.lerp(tint, 0.5);
+    const ringColor = tint
+      ? tint.clone().lerp(white, 0.4)
+      : new THREE.Color(accent).lerp(white, 0.55);
 
     return {
-      size: 3.2 + random() * 1.4,
+      size: 1.9 + random() * 0.9,
       brightness: 0.78 + random() * 0.55,
       coreSize: 0.78 + random() * 0.52,
       phase: random() * Math.PI * 2,
@@ -161,7 +169,7 @@ export function StarNode({
       haloColor,
       ringColor,
     };
-  }, [accent, region, seed]);
+  }, [accent, color, region, seed]);
 
   const uniforms = useMemo(
     () => ({
@@ -180,10 +188,11 @@ export function StarNode({
     [dimmed, emphasized, hovered, look, seed, selected],
   );
 
-  useFrame((state, delta) => {
+  useFrame((_, delta) => {
     const shader = material.current;
     if (!shader) return;
-    shader.uniforms.uTime.value = state.clock.elapsedTime + look.phase;
+    timeRef.current += delta;
+    shader.uniforms.uTime.value = timeRef.current + look.phase;
     shader.uniforms.uDim.value = THREE.MathUtils.damp(
       shader.uniforms.uDim.value,
       dimmed ? 0.16 : 1,

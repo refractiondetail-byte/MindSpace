@@ -1,5 +1,18 @@
-import { tokenize } from '../core/search';
+import { tokenize, fuzzyMatchToken } from '../core/search';
 import { REGION_META, type Region, type ThoughtNode } from '../core/types';
+import type { MindItem } from './types';
+
+const STOP_WORDS = new Set([
+  'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+  'i', 'me', 'my', 'we', 'our', 'you', 'your', 'he', 'she', 'it', 'its',
+  'they', 'them', 'their', 'this', 'that', 'these', 'those', 'to', 'of',
+  'in', 'on', 'at', 'for', 'with', 'by', 'from', 'as', 'into', 'like',
+  'through', 'after', 'over', 'between', 'out', 'against', 'during', 'before',
+  'where', 'when', 'why', 'how', 'all', 'any', 'both', 'each', 'few', 'more',
+  'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same',
+  'so', 'than', 'too', 'very', 'can', 'will', 'just', 'should', 'now', 'did',
+  'do', 'does', 'done', 'put', 'get', 'got', 'about', 'notes', 'note',
+]);
 
 /**
  * Live search relevance for the HUD. Scores every node as the query changes:
@@ -23,13 +36,11 @@ export interface RankOptions {
   now?: Date;
 }
 
-/** 0 = no match, 3 = exact word. */
+/** 0 = no match, 3 = exact word (with typo tolerance). */
 function matchToken(token: string, words: string[]): number {
   let best = 0;
   for (const word of words) {
-    if (word === token) best = Math.max(best, 3);
-    else if (word.startsWith(token)) best = Math.max(best, 2);
-    else if (word.includes(token)) best = Math.max(best, 1);
+    best = Math.max(best, fuzzyMatchToken(token, word));
   }
   return best;
 }
@@ -57,9 +68,13 @@ export function rankThoughts(
       continue;
     }
 
+    const mindItem = node as unknown as MindItem;
     const title = node.title.toLowerCase();
     const titleWords = tokenize(node.title);
     const contentWords = tokenize(node.content);
+    const summaryWords = tokenize(mindItem.summary ?? '');
+    const extractedWords = tokenize(mindItem.extractedText ?? '');
+    const topicWords = tokenize(mindItem.topic ?? '');
     const tagWords = node.tags.flatMap((tag) => tokenize(tag));
     const regionMeta = REGION_META[node.region];
     const regionWords = [
@@ -68,6 +83,9 @@ export function rankThoughts(
       ...tokenize(regionMeta.description),
     ];
     const typeWords = tokenize(node.type);
+
+    const significantTokens = tokens.filter((t) => !STOP_WORDS.has(t));
+    const searchTokens = significantTokens.length > 0 ? significantTokens : tokens;
 
     const cleanedQuery = normalizedQuery.replace(/^#/, '');
     const exactTag = node.tags.find((tag) => tag.toLowerCase() === cleanedQuery);
@@ -92,37 +110,49 @@ export function rankThoughts(
       reasons.push(`tag #${exactTag}`);
     }
 
-    let allTokensMatched = true;
-    for (const token of tokens) {
+    let matchedSignificant = 0;
+    for (const token of searchTokens) {
       const titleMatch = matchToken(token, titleWords);
       const tagMatch = matchToken(token, tagWords);
       const contentMatch = matchToken(token, contentWords);
+      const summaryMatch = matchToken(token, summaryWords);
+      const extractedMatch = matchToken(token, extractedWords);
+      const topicMatch = matchToken(token, topicWords);
       const regionMatch = matchToken(token, regionWords);
       const typeMatch = matchToken(token, typeWords);
 
       const tokenScore = Math.max(
         titleMatch * 6,
         tagMatch * 4.5,
+        topicMatch * 4,
+        summaryMatch * 2.4,
+        extractedMatch * 2,
         contentMatch * 1.6,
         regionMatch * 2.4,
         typeMatch * 2.4,
       );
 
-      if (tokenScore === 0) {
-        allTokensMatched = false;
-        break;
+      if (tokenScore > 0) {
+        matchedSignificant += 1;
+        score += tokenScore;
+
+        if (titleMatch >= 2) reasons.push('title');
+        else if (tagMatch >= 2) reasons.push('tag');
+        else if (topicMatch >= 2) reasons.push('topic');
+        else if (summaryMatch >= 2) reasons.push('summary');
+        else if (extractedMatch >= 2) reasons.push('extracted text');
+        else if (regionMatch >= 2) reasons.push('region');
+        else if (typeMatch >= 2) reasons.push('type');
+        else if (contentMatch >= 2) reasons.push('content');
       }
-
-      score += tokenScore;
-
-      if (titleMatch >= 2) reasons.push('title');
-      else if (tagMatch >= 2) reasons.push('tag');
-      else if (regionMatch >= 2) reasons.push('region');
-      else if (typeMatch >= 2) reasons.push('type');
-      else if (contentMatch >= 2) reasons.push('content');
     }
 
-    if (!allTokensMatched) continue;
+    if (matchedSignificant === 0) continue;
+
+    // Bonus when every significant token matched.
+    if (matchedSignificant === searchTokens.length && searchTokens.length > 1) {
+      score += 6;
+    }
 
     const createdAt = new Date(node.createdAt).getTime();
     const ageDays = Number.isNaN(createdAt)

@@ -63,16 +63,16 @@ export const BRAIN_RADII: Vec3 = [22, 17, 29];
 
 export const GALAXY_SHAPE = {
   arms: 4,
-  inner: 13.5,
-  outer: 36,
+  inner: 20,
+  outer: 84,
   /** Total angle swept by one arm, in radians. */
-  span: 4.9,
+  span: 5.4,
   start: 0.62,
-  thickness: 4.4,
+  thickness: 5.6,
 } as const;
 
 export const WORLD_CAMERAS: Record<WorldTheme, CameraView> = {
-  galaxy: { home: [0, 30, 50], target: [0, 0, 0], focusDistance: 12, maxDistance: 150 },
+  galaxy: { home: [0, 42, 86], target: [0, 0, 0], focusDistance: 10, maxDistance: 320 },
 };
 
 export const REGION_ORDER: Region[] = ['prefrontal', 'parietal', 'limbic', 'hippocampus'];
@@ -148,7 +148,7 @@ function galaxyScaffold(): Scaffold {
     regions: REGION_ORDER.map((region) => ({
       region,
       center: galaxyPoint(0.58, REGION_ORDER.indexOf(region), `region:${region}`),
-      radius: 2.2,
+      radius: 2.6,
     })),
     position: (node, index, count, region) => {
       const base = count === 1 ? 0.55 : 0.15 + 0.72 * (index / (count - 1));
@@ -380,7 +380,7 @@ export function buildSceneLayout(
     thoughts,
     byId,
     connected,
-    world === 'galaxy' ? 30 : 12,
+    world === 'galaxy' ? 64 : 12,
     world === 'galaxy',
   );
 

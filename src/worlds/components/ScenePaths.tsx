@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { SceneEdge } from '../layout';
@@ -302,9 +302,11 @@ export function ScenePaths({
     [pulseMaterial],
   );
 
-  useFrame((state) => {
+  const timeRef = useRef(0);
+  useFrame((state, delta) => {
+    timeRef.current += delta;
     if (pulseMaterial) {
-      pulseMaterial.uniforms.uTime.value = state.clock.elapsedTime;
+      pulseMaterial.uniforms.uTime.value = timeRef.current;
       pulseMaterial.uniforms.uDpr.value = state.viewport.dpr;
     }
   });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import {
@@ -48,7 +48,7 @@ const VERTEX = /* glsl */ `
     gl_PointSize = clamp(
       uSize * aSize * uDpr * (120.0 / max(3.0, -viewPosition.z)),
       1.0,
-      24.0
+      14.0
     );
 
     vColor = aColor;
@@ -87,6 +87,7 @@ export function GalaxyDust({
   seed?: number;
 }) {
   const dpr = useThree((state) => state.viewport.dpr);
+  const timeRef = useRef(0);
 
   const geometry = useMemo(() => {
     const random = mulberry32(seed);
@@ -130,7 +131,7 @@ export function GalaxyDust({
       colors[index * 3 + 1] = color.g * brightness;
       colors[index * 3 + 2] = color.b * brightness;
 
-      sizes[index] = 0.4 + random() * 1.3;
+      sizes[index] = 0.3 + random() * 0.8;
       alphas[index] = 0.35 + random() * 0.65;
     }
 
@@ -147,10 +148,10 @@ export function GalaxyDust({
       new THREE.ShaderMaterial({
         uniforms: {
           uTime: { value: 0 },
-          uSize: { value: 1.35 },
+          uSize: { value: 1.6 },
           uDpr: { value: dpr },
           uSpin: { value: spin },
-          uOpacity: { value: 0.6 },
+          uOpacity: { value: 0.55 },
         },
         vertexShader: VERTEX,
         fragmentShader: FRAGMENT,
@@ -170,8 +171,9 @@ export function GalaxyDust({
     [geometry, material],
   );
 
-  useFrame((state) => {
-    material.uniforms.uTime.value = state.clock.elapsedTime;
+  useFrame((state, delta) => {
+    timeRef.current += delta;
+    material.uniforms.uTime.value = timeRef.current;
     material.uniforms.uDpr.value = state.viewport.dpr;
   });
 

@@ -1,51 +1,33 @@
-import { useMemo, useRef, useState } from 'react';
-import { Billboard, Html } from '@react-three/drei';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Html } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 
-const NO_RAYCAST = () => null;
+const BLACK_HOLE_RADIUS = 9.0;
 
-/**
- * Three independent disk layers plus a camera-facing lens that bends starlight.
- * Each layer travels at its own speed, tilts in its own direction, and brightens
- * along its own approaching side so the whole structure breathes and swirls
- * instead of behaving like a single static cutout.
- */
-const DISKS = [
-  {
-    tilt: [Math.PI / 2 - 0.20, 0.10, 0.16] as const,
-    inner: 2.85,
-    outer: 12.0,
-    spinBase: 1.0,
-    spinFalloff: 0.16,
-    noiseScale: 0.6,
-    dopplerSide: 2.35,
-    rimWidth: 0.55,
-    rimRadius: 3.1,
-  },
-] as const;
+const VERTEX = /* glsl */ `
+  precision highp float;
 
-const DISK_VERTEX = /* glsl */ `
-  varying vec2 vDisk;
+  varying vec3 vWorldPosition;
+  varying vec3 vNormal;
 
   void main() {
-    vDisk = position.xy;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    vec4 worldPos = modelMatrix * vec4(position, 1.0);
+    vWorldPosition = worldPos.xyz;
+    vNormal = normalize(mat3(modelMatrix) * normal);
+    gl_Position = projectionMatrix * viewMatrix * worldPos;
   }
 `;
 
-const DISK_FRAGMENT = /* glsl */ `
-  uniform float uTime;
-  uniform float uInner;
-  uniform float uOuter;
-  uniform float uSpinBase;
-  uniform float uSpinFalloff;
-  uniform float uNoiseScale;
-  uniform float uDopplerSide;
-  uniform float uRimWidth;
-  uniform float uRimRadius;
+const FRAGMENT = /* glsl */ `
+  precision highp float;
 
-  varying vec2 vDisk;
+  uniform float uTime;
+  uniform vec3 uCameraPosition;
+  uniform float uArchIntensity;
+  uniform float uRingBrightness;
+  varying vec3 vWorldPosition;
+  varying vec3 vNormal;
 
   float hash21(vec2 p) {
     p = fract(p * vec2(123.34, 456.21));
@@ -67,7 +49,7 @@ const DISK_FRAGMENT = /* glsl */ `
   float fbm(vec2 p) {
     float value = 0.0;
     float amplitude = 0.5;
-    for (int octave = 0; octave < 4; octave += 1) {
+    for (int i = 0; i < 4; i += 1) {
       value += amplitude * vnoise(p);
       p *= 2.03;
       amplitude *= 0.5;
@@ -76,228 +58,281 @@ const DISK_FRAGMENT = /* glsl */ `
   }
 
   void main() {
-    float radius = length(vDisk);
-    if (radius < uInner || radius > uOuter) discard;
+    const float R = 9.0;
+    const float RV = 5.0;
+    const float EPS = 0.0001;
 
-    float angle = atan(vDisk.y, vDisk.x);
-    float rotation = uTime * (uSpinBase / (0.85 + radius * uSpinFalloff));
-    float spin = angle + rotation;
+    vec3 center = vec3(0.0);
+    vec3 dir = vWorldPosition - uCameraPosition;
+    float dirLen = length(dir);
+    vec3 rd = dir / max(dirLen, EPS);
+    vec3 oc = uCameraPosition - center;
+    float b = dot(rd, oc);
+    float c = dot(oc, oc) - R * R;
+    float disc = b * b - c;
 
-    // Orbiting turbulence in the rotating frame, with no texture seams.
-    vec2 polar = vec2(cos(spin), sin(spin)) * radius;
-    float n1 = fbm(polar * uNoiseScale + vec2(0.0, radius * 0.35) + uTime * 0.02);
-    float n2 = fbm(
-      polar * (uNoiseScale * 2.2) +
-        vec2(n1 * 2.2, radius * 0.7) -
-        uTime * 0.03
-    );
-    float fine = pow(
-      0.5 +
-        0.5 * sin(spin * 26.0 - radius * 2.8 + n2 * 8.0 + uTime * 0.4),
-      5.0
-    );
-    float bands = 0.5 + 0.5 * sin(spin * 7.0 + radius * 1.6 + n2 * 5.0);
-
-    float density;
-    if (radius < uRimRadius + uRimWidth) {
-      density = 1.0 - smoothstep(uRimRadius - uRimWidth, uRimRadius, radius);
-    } else {
-      density = 1.0 - smoothstep(uOuter - (uOuter - uRimRadius) * 0.5, uOuter, radius);
+    if (disc < 0.0) {
+      gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
+      return;
     }
 
-    density *= smoothstep(uInner, uInner + (uOuter - uInner) * 0.12, radius);
+    float sqrtDisc = sqrt(max(disc, 0.0));
+    float tNear = -b - sqrtDisc;
+    float tFar = -b + sqrtDisc;
+    if (tNear < 0.0) tNear = 0.0;
+    if (tFar < tNear) tFar = tNear;
 
-    float heat = clamp((uRimRadius * 1.6 - radius) / 5.0, 0.0, 1.0);
+    vec3 ro = uCameraPosition + rd * tNear;
+    float maxDist = max(tFar - tNear, EPS);
 
-    // Brightest along one approaching side; the far side stays amber.
-    float doppler = 0.2 + 0.8 * pow(0.5 + 0.5 * cos(angle - uDopplerSide), 2.0);
+    vec3 diskNormal = vec3(0.0, 1.0, 0.0);
 
-    vec3 ember = vec3(0.5, 0.12, 0.02);
-    vec3 amber = vec3(1.0, 0.55, 0.16);
-    vec3 whiteGold = vec3(1.0, 0.95, 0.84);
-    vec3 color = mix(ember, amber, 0.25 + heat * 0.75);
-    color = mix(
-      color,
-      whiteGold,
-      pow(max(0.0, heat - 0.3), 1.4) * 1.1
-    );
+    vec3 color = vec3(0.0);
+    float alpha = 0.0;
+    float t = 0.0;
+    const int STEPS = 80;
+    const float STEP = 0.225;
 
-    float alpha =
-      density *
-      (0.18 + 0.45 * n1 + 0.22 * n2 + 0.16 * fine + 0.12 * bands) *
-      (0.35 + 0.65 * doppler);
+    for (int i = 0; i < STEPS; i++) {
+      if (t > maxDist) break;
+      vec3 p = ro + rd * t;
+      float r = length(p);
 
-    float hotRim = exp(-pow((radius - uRimRadius) / uRimWidth, 2.0));
-    color += whiteGold * hotRim * 0.9;
-    alpha += hotRim * 0.2;
+      if (r < R) {
+        // Event horizon core: pitch-black, light-trapping void.
+        if (r < 1.8) {
+          color = vec3(0.0);
+          alpha = 1.0;
+          break;
+        }
 
-    gl_FragColor = vec4(
-      color * (0.7 + heat * 1.5),
-      clamp(alpha * 0.9, 0.0, 1.0)
-    );
-  }
-`;
+        float volumeFade = 1.0 - smoothstep(RV * 0.78, RV, r);
+        float edgeFade = 1.0 - smoothstep(R * 0.92, R, r);
 
-const PHOTON_VERTEX = /* glsl */ `
-  varying vec2 vUv;
-  void main() {
-    vUv = uv;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-  }
-`;
+        float h = dot(p, diskNormal);
+        vec3 radialVec = p - diskNormal * h;
+        float rho = length(radialVec);
+        float ang = atan(radialVec.z, radialVec.x);
 
-const PHOTON_FRAGMENT = /* glsl */ `
-  uniform float uTime;
-  varying vec2 vUv;
+        float diskThickness = 0.16 + 0.08 * rho;
+        float inDisk = 1.0 - smoothstep(0.0, diskThickness, abs(h));
 
-  void main() {
-    vec2 p = vUv - 0.5;
-    float r = length(p) * 2.0;
-    float angle = atan(p.y, p.x);
-    float ring = smoothstep(0.82, 0.90, r) * smoothstep(1.08, 0.96, r);
-    float flow = 0.5 + 0.5 * sin(angle * 8.0 - uTime * 4.0);
-    float pulse = 0.75 + 0.25 * sin(uTime * 2.4);
-    float bend = 0.5 + 0.5 * sin(angle * 3.0 + uTime * 1.6);
-    vec3 base = vec3(1.0, 0.88, 0.62);
-    vec3 hot = vec3(1.0, 1.0, 0.95);
-    vec3 color = mix(base, hot, flow * bend);
-    float alpha = ring * (0.35 + 0.65 * flow) * pulse;
-    gl_FragColor = vec4(color * (1.2 + 0.8 * flow), clamp(alpha, 0.0, 1.0));
-  }
-`;
+        float speed = 3.6 / (rho + 0.25);
+        float spiral = ang + uTime * speed + rho * 4.0;
+        vec2 spiralCoord = vec2(cos(spiral), sin(spiral)) * (4.0 + rho * 2.2);
+        float noise = fbm(spiralCoord + vec2(uTime * 0.22, -uTime * 0.16));
+        float filament = smoothstep(0.35, 0.72, noise);
+        float diskDensity = inDisk * filament *
+          smoothstep(1.8, 2.2, rho) * (1.0 - smoothstep(5.2, 6.5, rho));
 
-const LENS_VERTEX = /* glsl */ `
-  varying vec2 vUv;
-  void main() {
-    vUv = uv;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-  }
-`;
+        float doppler = 0.55 + 0.45 * (0.5 + 0.5 * cos(ang - 1.4));
+        diskDensity *= doppler;
 
-const LENS_FRAGMENT = /* glsl */ `
-  uniform float uTime;
-  varying vec2 vUv;
+        float dustNoise = fbm(spiralCoord * 1.7 - vec2(uTime * 0.10, uTime * 0.07));
+        float dust = 1.0 - smoothstep(0.18, 0.50, dustNoise);
+        diskDensity *= (0.30 + 0.70 * dust);
 
-  void main() {
-    vec2 p = vUv - 0.5;
-    float r = length(p) * 2.0;
-    float angle = atan(p.y, p.x);
-    float ring = smoothstep(0.90, 0.96, r) * smoothstep(1.12, 1.0, r);
-    float wave = 0.5 + 0.5 * sin(angle * 5.0 + uTime * 2.0);
-    float pulse = 0.6 + 0.4 * sin(uTime * 1.7 + angle * 2.0);
-    vec3 color = vec3(0.75, 0.85, 1.0);
-    float alpha = ring * wave * pulse * 0.45;
+        float lensBand = smoothstep(2.0, 2.4, r) * (1.0 - smoothstep(6.0, 7.2, r));
+        float archTop = exp(-pow(abs((h - (0.95 * (1.0 - rho / 6.5))) / 0.16), 2.0));
+        float archBottom = exp(-pow(abs((h + (0.55 * (1.0 - rho / 6.5))) / 0.16), 2.0));
+        float arches = lensBand * (archTop * 1.35 + archBottom * 0.85) *
+          (0.6 + 0.4 * sin(ang * 4.0 + uTime * 2.0));
+
+        float wispNoise = fbm(p.xz * 1.6 + p.y * 0.7 + uTime * 0.18);
+        float wisps = smoothstep(0.42, 0.72, wispNoise) *
+          smoothstep(2.0, 2.6, r) * (1.0 - smoothstep(6.0, 7.5, r)) * 0.45;
+
+        // Tight, crisp rim just outside the event horizon.
+        float rim = smoothstep(1.8, 2.0, r) * (1.0 - smoothstep(2.0, 2.35, r));
+        rim *= 0.72 + 0.28 * (0.5 + 0.5 * sin(ang * 6.0 + uTime * 2.5));
+
+        float density = (diskDensity * 0.92 + arches * 1.25 * uArchIntensity + rim * 2.6 * uRingBrightness) * edgeFade;
+        density = max(density, 0.0);
+
+        vec3 deepOrange = vec3(0.28, 0.08, 0.015);
+        vec3 amber = vec3(0.82, 0.36, 0.07);
+        vec3 gold = vec3(1.0, 0.66, 0.14);
+        vec3 hot = vec3(1.0, 0.92, 0.72);
+
+        float radialT = clamp((rho - 1.8) / (6.5 - 1.8), 0.0, 1.0);
+        vec3 diskColor = mix(hot, amber, smoothstep(0.0, 0.45, radialT));
+        diskColor = mix(diskColor, vec3(0.55, 0.12, 0.02), smoothstep(0.45, 1.0, radialT));
+        vec3 sampleColor = mix(diskColor, gold, clamp(diskDensity * 1.1, 0.0, 1.0) * 0.35);
+        sampleColor = mix(sampleColor, vec3(1.0, 0.95, 0.8), clamp(arches * 1.1 * uArchIntensity, 0.0, 1.0));
+        sampleColor = mix(sampleColor, hot, clamp(rim * 1.8, 0.0, 1.0));
+
+        float stepAlpha = 1.0 - exp(-density * STEP * 7.0);
+        color += (1.0 - alpha) * sampleColor * stepAlpha;
+        alpha += (1.0 - alpha) * stepAlpha;
+
+        if (alpha > 0.985) {
+          alpha = 1.0;
+          break;
+        }
+      }
+
+      t += STEP;
+    }
+
     gl_FragColor = vec4(color, clamp(alpha, 0.0, 1.0));
   }
 `;
 
-/**
- * Pitch-black horizon core, bright white-gold animated photon ring, and a
- * fainter lensing ring that wobbles to suggest bending light.
- */
 interface BlackHoleProps {
   onSelect?: () => void;
 }
 
 export function BlackHole({ onSelect }: BlackHoleProps = {}) {
-  const uniforms = useMemo(() => ({ uTime: { value: 0 } }), []);
-  const photonUniforms = useMemo(() => ({ uTime: { value: 0 } }), []);
-  const lensUniforms = useMemo(() => ({ uTime: { value: 0 } }), []);
-  const groupRef = useRef<THREE.Group>(null);
-  const photonRef = useRef<THREE.Mesh>(null);
-  const lensRef = useRef<THREE.Mesh>(null);
+  const materialRef = useRef<any>(null);
+  const meshRef = useRef<THREE.Mesh | null>(null);
+  const timeRef = useRef(0);
+  const loggedRef = useRef(false);
   const [hovered, setHovered] = useState(false);
 
+  const particleData = useRef<{ radii: Float32Array; angles: Float32Array; heights: Float32Array } | null>(null);
+  const particleGeometry = useMemo(() => {
+    const count = 150;
+    const positions = new Float32Array(count * 3);
+    const radii = new Float32Array(count);
+    const angles = new Float32Array(count);
+    const heights = new Float32Array(count);
+    let seed = 12345;
+    const rand = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+    for (let i = 0; i < count; i += 1) {
+      const r = 2.5 + rand() * 6.5;
+      const a = rand() * Math.PI * 2;
+      const h = (rand() - 0.5) * 0.7 * (1 - (r - 2.5) / 6.5);
+      radii[i] = r;
+      angles[i] = a;
+      heights[i] = h;
+      positions[i * 3] = r * Math.cos(a);
+      positions[i * 3 + 1] = h;
+      positions[i * 3 + 2] = r * Math.sin(a);
+    }
+    particleData.current = { radii, angles, heights };
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    return geometry;
+  }, []);
+
+  useEffect(() => () => particleGeometry.dispose(), [particleGeometry]);
+
+  const uniforms = useRef({
+    uTime: { value: 0 },
+    uCameraPosition: { value: new THREE.Vector3() },
+    uArchIntensity: { value: 1.25 },
+    uRingBrightness: { value: 1.15 },
+  }).current;
+
+  useEffect(() => {
+    console.info('[BlackHole] mounted at origin with scale 1');
+    return () => console.info('[BlackHole] unmounted');
+  }, []);
+
   useFrame((state, delta) => {
-    uniforms.uTime.value = state.clock.elapsedTime;
-    photonUniforms.uTime.value = state.clock.elapsedTime;
-    lensUniforms.uTime.value = state.clock.elapsedTime;
-    if (groupRef.current) {
-      const target = hovered ? 1.18 : 1;
-      const next = THREE.MathUtils.damp(groupRef.current.scale.x, target, 8, delta);
-      groupRef.current.scale.setScalar(next);
+    timeRef.current += delta;
+    const shader = materialRef.current;
+    if (!shader) return;
+    shader.uniforms.uTime.value = timeRef.current;
+    shader.uniforms.uCameraPosition.value.copy(state.camera.position);
+
+    const data = particleData.current;
+    const positionAttr = particleGeometry.getAttribute('position') as THREE.BufferAttribute | undefined;
+    if (data && positionAttr) {
+      for (let i = 0; i < data.radii.length; i += 1) {
+        const r = data.radii[i];
+        const speed = 0.9 / Math.pow(r, 1.15);
+        data.angles[i] += delta * speed;
+        const a = data.angles[i];
+        positionAttr.setXYZ(i, r * Math.cos(a), data.heights[i], r * Math.sin(a));
+      }
+      positionAttr.needsUpdate = true;
     }
-    if (photonRef.current) {
-      photonRef.current.rotation.z = state.clock.elapsedTime * 0.6;
-    }
-    if (lensRef.current) {
-      lensRef.current.rotation.z = -state.clock.elapsedTime * 0.35;
+
+    // Render only the side facing the camera to avoid double volume passes.
+    const isInside = state.camera.position.length() < BLACK_HOLE_RADIUS;
+    shader.side = isInside ? THREE.BackSide : THREE.FrontSide;
+
+    if (!loggedRef.current) {
+      loggedRef.current = true;
+      console.info('[BlackHole] material ready', {
+        hasProgram: Boolean(shader.program),
+        meshScale: meshRef.current?.scale.toArray() ?? null,
+        meshPosition: meshRef.current?.position.toArray() ?? null,
+        cameraPosition: state.camera.position.toArray(),
+      });
     }
   });
 
+  const NO_RAYCAST = () => null;
+
   return (
-    <group
-      ref={groupRef}
-      onPointerOver={(event) => {
-        event.stopPropagation();
-        setHovered(true);
-        document.body.style.cursor = 'pointer';
-        onSelect?.();
-      }}
-      onPointerOut={() => {
-        setHovered(false);
-        document.body.style.cursor = '';
-      }}
-    >
-      {/* Clickable hitbox for opening the black hole info card. */}
+    <group rotation={[0.28, 0.18, 0]}>
       <mesh
+        ref={(el) => {
+          meshRef.current = el;
+        }}
+        renderOrder={1}
         onClick={(event) => {
           event.stopPropagation();
           onSelect?.();
         }}
-        onPointerOver={() => {
+        onPointerOver={(event) => {
+          event.stopPropagation();
+          setHovered(true);
           document.body.style.cursor = 'pointer';
+          onSelect?.();
         }}
         onPointerOut={() => {
+          setHovered(false);
           document.body.style.cursor = '';
         }}
       >
-        <sphereGeometry args={[4.2, 32, 32]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        <sphereGeometry args={[BLACK_HOLE_RADIUS, 64, 48]} />
+        <shaderMaterial
+          ref={(el) => {
+            materialRef.current = el;
+          }}
+          uniforms={uniforms}
+          vertexShader={VERTEX}
+          fragmentShader={FRAGMENT}
+          transparent
+          depthWrite={false}
+          side={THREE.DoubleSide}
+          blending={THREE.NormalBlending}
+          toneMapped={false}
+        />
       </mesh>
+      {/* Orbiting particles: faster closer in, slower farther out. */}
+      <points geometry={particleGeometry} raycast={NO_RAYCAST} renderOrder={3}>
+        <pointsMaterial
+          color="#ffd7a8"
+          size={0.09}
+          transparent
+          opacity={0.72}
+          depthWrite={false}
+          blending={THREE.AdditiveBlending}
+          sizeAttenuation
+          toneMapped={false}
+        />
+      </points>
 
-      {/* Pitch-black event horizon. */}
-      <mesh raycast={NO_RAYCAST} renderOrder={0}>
-        <sphereGeometry args={[2.9, 64, 64]} />
-        <meshBasicMaterial color="#000000" />
+      {/* Pitch-black event horizon rendered in front of the accretion volume. */}
+      <mesh raycast={NO_RAYCAST} renderOrder={2}>
+        <sphereGeometry args={[1.8, 64, 64]} />
+        <meshBasicMaterial
+          color="#000000"
+          transparent
+          opacity={1}
+          depthWrite={false}
+          toneMapped={false}
+        />
       </mesh>
-
-      {/* Animated photon ring that suggests light bending around the horizon. */}
-      <Billboard>
-        <mesh ref={photonRef} raycast={NO_RAYCAST} renderOrder={4}>
-          <ringGeometry args={[2.95, 3.12, 128]} />
-          <shaderMaterial
-            uniforms={photonUniforms}
-            vertexShader={PHOTON_VERTEX}
-            fragmentShader={PHOTON_FRAGMENT}
-            transparent
-            depthWrite={false}
-            side={THREE.DoubleSide}
-            blending={THREE.AdditiveBlending}
-            toneMapped={false}
-          />
-        </mesh>
-      </Billboard>
-
-      {/* Fainter lensing ring that wobbles around the photon ring. */}
-      <Billboard>
-        <mesh ref={lensRef} raycast={NO_RAYCAST} renderOrder={3}>
-          <ringGeometry args={[3.3, 3.6, 128]} />
-          <shaderMaterial
-            uniforms={lensUniforms}
-            vertexShader={LENS_VERTEX}
-            fragmentShader={LENS_FRAGMENT}
-            transparent
-            depthWrite={false}
-            side={THREE.DoubleSide}
-            blending={THREE.AdditiveBlending}
-            toneMapped={false}
-          />
-        </mesh>
-      </Billboard>
-
       {hovered && (
-        <Html position={[0, 4.6, 0]} center zIndexRange={[60, 0]} style={{ pointerEvents: 'none' }}>
+        <Html position={[0, 3.0, 0]} center zIndexRange={[60, 0]} style={{ pointerEvents: 'none' }}>
           <div className="hud-panel w-max max-w-[16rem] px-3 py-2 text-left">
             <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-slate-300">
               Black hole
@@ -306,48 +341,9 @@ export function BlackHole({ onSelect }: BlackHoleProps = {}) {
               A region where gravity is so strong that nothing, not even light,
               can escape.
             </p>
-            <ul className="mt-1.5 space-y-0.5 text-[10px] text-slate-400">
-              <li>• Event horizon: point of no return</li>
-              <li>• Singularity: concentrated mass at center</li>
-              <li>• Lensing: light bends around the hole</li>
-              <li>• Accretion disk: superheated matter spiraling inward</li>
-            </ul>
           </div>
         </Html>
       )}
-
-      {/* Multiple independent accretion-disk layers. */}
-      {DISKS.map((config, index) => (
-        <group
-          key={index}
-          rotation={new THREE.Euler(...config.tilt)}
-          renderOrder={index + 1}
-        >
-          <mesh raycast={NO_RAYCAST}>
-            <ringGeometry args={[config.inner, config.outer, 256, 48]} />
-            <shaderMaterial
-              uniforms={{
-                uTime: uniforms.uTime,
-                uInner: { value: config.inner },
-                uOuter: { value: config.outer },
-                uSpinBase: { value: config.spinBase },
-                uSpinFalloff: { value: config.spinFalloff },
-                uNoiseScale: { value: config.noiseScale },
-                uDopplerSide: { value: config.dopplerSide },
-                uRimWidth: { value: config.rimWidth },
-                uRimRadius: { value: config.rimRadius },
-              }}
-              vertexShader={DISK_VERTEX}
-              fragmentShader={DISK_FRAGMENT}
-              transparent
-              depthWrite={false}
-              side={THREE.DoubleSide}
-              blending={THREE.AdditiveBlending}
-              toneMapped={true}
-            />
-          </mesh>
-        </group>
-      ))}
     </group>
   );
 }

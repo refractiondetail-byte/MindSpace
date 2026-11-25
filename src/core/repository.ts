@@ -89,6 +89,13 @@ export async function getAttachmentBlob(attachmentId: string): Promise<Blob | un
   return stored?.blob;
 }
 
+export async function updateThought(id: string, patch: Record<string, unknown>): Promise<void> {
+  await initDatabase();
+  const node = await db.thoughts.get(id);
+  if (!node) return;
+  await db.thoughts.put({ ...node, ...patch });
+}
+
 export async function deleteThought(id: string): Promise<void> {
   await db.transaction('rw', db.thoughts, db.attachments, async () => {
     await db.attachments.where('thoughtId').equals(id).delete();

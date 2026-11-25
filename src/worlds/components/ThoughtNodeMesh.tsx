@@ -93,12 +93,12 @@ function SolarSystem({ attachments }: { attachments: ThoughtNode['attachments'] 
   return (
     <group ref={group}>
       {attachments.map((attachment, index) => {
-        const radius = 2.6 + index * 0.75;
+        const radius = 1.4 + index * 0.5;
         const angle = (index / Math.max(1, attachments.length)) * Math.PI * 2;
         return (
           <group key={attachment.id}>
             <mesh rotation={[Math.PI / 2, 0, 0]} raycast={() => null}>
-              <torusGeometry args={[radius, 0.025, 8, 64]} />
+              <torusGeometry args={[radius, 0.018, 8, 64]} />
               <meshBasicMaterial
                 color={attachment.kind === 'image' ? '#93c5fd' : '#cbd5e1'}
                 transparent
@@ -129,6 +129,7 @@ export function ThoughtNodeMesh({
   onSelect,
 }: ThoughtNodeMeshProps) {
   const group = useRef<THREE.Group>(null);
+  const timeRef = useRef(0);
   const ring = useRef<THREE.Mesh>(null);
   const emphasisRing = useRef<THREE.Mesh>(null);
   const emphasisMaterial = useRef<THREE.MeshBasicMaterial | null>(null);
@@ -146,7 +147,8 @@ export function ThoughtNodeMesh({
       <sphereGeometry args={[1, 28, 28]} />
     );
 
-  useFrame((state, delta) => {
+  useFrame((_, delta) => {
+    timeRef.current += delta;
     const target =
       placement.scale *
       (selected ? 1.5 : hovered ? 1.22 : emphasized ? 1.1 : dimmed ? 0.7 : 1);
@@ -156,16 +158,16 @@ export function ThoughtNodeMesh({
     }
     if (ring.current) {
       ring.current.rotation.y += delta * 0.55;
-      ring.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.35) * 0.4;
+      ring.current.rotation.x = Math.sin(timeRef.current * 0.35) * 0.4;
     }
     if (emphasisRing.current) {
       emphasisRing.current.rotation.z += delta * 0.8;
-      const pulse = 1.8 + Math.sin(state.clock.elapsedTime * 2.2) * 0.12;
+      const pulse = 1.8 + Math.sin(timeRef.current * 2.2) * 0.12;
       emphasisRing.current.scale.setScalar(pulse);
     }
     if (emphasisMaterial.current) {
       emphasisMaterial.current.opacity =
-        0.3 + 0.18 * (0.5 + 0.5 * Math.sin(state.clock.elapsedTime * 2.2));
+        0.3 + 0.18 * (0.5 + 0.5 * Math.sin(timeRef.current * 2.2));
     }
   });
 

@@ -3,7 +3,6 @@ import { REGION_META, type Region, type ThoughtNode } from '../../core/types';
 import { getClusterName } from '../../lib/clusterNames';
 import type { RankedThought } from '../relevance';
 import { relativeTime } from '../time';
-import { RegionFilter } from './RegionFilter';
 
 interface SearchPanelProps {
   query: string;
@@ -18,6 +17,9 @@ interface SearchPanelProps {
   searchLabel?: string;
   clusterNames?: Record<Region, string>;
   onRenameCluster?: (region: Region, name: string) => void;
+  loading?: boolean;
+  aiAnswer?: string;
+  aiReasons?: Record<string, string>;
 }
 
 export function SearchPanel({
@@ -33,10 +35,18 @@ export function SearchPanel({
   searchLabel,
   clusterNames,
   onRenameCluster,
+  loading = false,
+  aiAnswer,
+  aiReasons,
 }: SearchPanelProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [expanded, setExpanded] = useState(false);
   const trimmed = query.trim();
+  void region;
+  void onRegionChange;
+  void counts;
+  void clusterNames;
+  void onRenameCluster;
   const results = trimmed ? ranked.slice(0, 6) : [];
   const remaining = trimmed ? ranked.length - results.length : 0;
 
@@ -53,13 +63,6 @@ export function SearchPanel({
             target.tagName === 'TEXTAREA' ||
             target.isContentEditable),
       );
-
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault();
-        inputRef.current?.focus();
-        inputRef.current?.select();
-        return;
-      }
 
       if (event.key === '/' && !typing) {
         event.preventDefault();
@@ -101,11 +104,15 @@ export function SearchPanel({
   }
 
   return (
-    <div className={`hud-panel relative flex flex-col gap-2.5 p-3 ${className}`}>
+    <div className={`search-outline hud-panel relative flex flex-col gap-2.5 p-3 ${className}`}>
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (results[0]) onPick(results[0].node);
+          if (results[0]) {
+            onPick(results[0].node);
+            onQueryChange('');
+            setExpanded(false);
+          }
         }}
       >
         <label className="relative block">
@@ -143,10 +150,15 @@ export function SearchPanel({
         </label>
       </form>
 
-      <RegionFilter value={region} onChange={onRegionChange} counts={counts} total={total} clusterNames={clusterNames} onRename={onRenameCluster} />
+      {(loading || aiAnswer) && (
+        <div className="flex items-center gap-2 text-[11px] text-zinc-500">
+          {loading && <span className="inline-block h-3 w-3 animate-spin rounded-full border border-zinc-500 border-t-transparent" />}
+          <span>{loading ? 'Refining with AI…' : aiAnswer}</span>
+        </div>
+      )}
 
       {trimmed && (
-        <div className="hud-panel absolute inset-x-0 top-full z-30 mt-2 p-1.5">
+        <div className="mt-2 rounded-xl border border-[#1f1f1f] bg-[#09090b] p-1.5">
           {results.length === 0 ? (
             <p className="px-2 py-3 text-center text-xs text-slate-400">
               Nothing matches “{trimmed}”.
@@ -162,7 +174,11 @@ export function SearchPanel({
                   <li key={node.id}>
                     <button
                       type="button"
-                      onClick={() => onPick(node)}
+                      onClick={() => {
+                        onPick(node);
+                        onQueryChange('');
+                        setExpanded(false);
+                      }}
                       className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-white/10 ${
                         index === 0 ? 'bg-white/[0.06]' : ''
                       }`}
@@ -207,9 +223,11 @@ export function SearchPanel({
                             {percent}%
                           </span>
                           <span className="truncate text-[10px] text-slate-500">
-                            {reasons.length > 0
-                              ? reasons.join(' · ')
-                              : `${getClusterName(clusterNames, node.region)} · ${relativeTime(node.createdAt)}`}
+                            {aiReasons?.[node.id]
+                              ? aiReasons[node.id]
+                              : reasons.length > 0
+                                ? reasons.join(' · ')
+                                : `${getClusterName(clusterNames, node.region)} · ${relativeTime(node.createdAt)}`}
                           </span>
                         </span>
                       </span>

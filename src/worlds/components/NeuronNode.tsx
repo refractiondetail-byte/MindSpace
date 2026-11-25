@@ -148,8 +148,10 @@ export function NeuronNode({ seed, accent, dimmed, firing }: NeuronNodeProps) {
   const glow = useRef<THREE.Mesh>(null);
   const glowMaterial = useRef<THREE.MeshBasicMaterial | null>(null);
 
-  useFrame((state) => {
-    const time = state.clock.elapsedTime;
+  const timeRef = useRef(0);
+  useFrame((_, delta) => {
+    timeRef.current += delta;
+    const time = timeRef.current;
     const pace = firing ? 1.8 : 0.9;
     const pulse = 0.5 + 0.5 * Math.sin(time * 3.1);
 

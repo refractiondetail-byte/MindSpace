@@ -1,54 +1,78 @@
-import { useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-} from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { listThoughts } from '../core/repository';
-import type { Region, ThoughtNode } from '../core/types';
-import { WorldCanvas } from '../worlds/WorldCanvas';
-import { getWorldTheme, type WorldTheme } from '../worlds/themes';
-import { rankThoughts } from './relevance';
-import { loadVisits, recordVisit } from './visits';
-import { CapturePage } from './components/CapturePage';
-import { NodeInspector } from './components/NodeInspector';
-import { SearchPanel } from './components/SearchPanel';
-import { TogglePill } from './components/TogglePill';
-import {
-  buildActivitySeries,
-  estimateTodayMood,
-  summarizeWeek,
-  type WeekSummary,
-} from './insights';
-import { relativeTime, useNow } from './time';
-import { REGION_META, REGIONS } from '../core/types';
-import { loadClusterNames } from '../lib/clusterNames';
-import { AuthPanel } from './components/AuthPanel';
+import { listThoughts, createThought, addAttachment } from '../core/repository';
 import { db } from '../core/db';
+import type { ThoughtNode } from '../core/types';
+import { loadVisits, recordVisit } from './visits';
+import { SearchPanel } from './components/SearchPanel';
+import { NodeInspector } from './components/NodeInspector';
+import { CapturePage } from './components/CapturePage';
+import { AuthPanel } from './components/AuthPanel';
 import { loadUserGalaxy, saveUserGalaxy } from '../lib/supabaseSync';
 import { useClusterNames } from './hooks/useClusterNames';
-import { CheckInForm } from './components/DailyCheckIn';
-
+import { loadClusterNames } from '../lib/clusterNames';
+import { organizeWithAI, searchWithAI } from '../lib/ai';
+import { rankThoughts, type RankedThought } from './relevance';
+import { uploadFile, fileToBase64, compressImageForUpload } from '../lib/supabaseStorage';
+import { recordNoteVersion } from '../lib/noteVersions';
+import { TopicGraph } from '../worlds/TopicGraph';
+import { asItems, type MindItem } from './types';
+import type { Region } from '../core/types';
 
 export default function App() {
   const thoughts = useLiveQuery(() => listThoughts(), []);
-  const [mode, setMode] = useState<'world' | 'home'>('world');
-  const themeId: WorldTheme = 'galaxy';
-  const [query, setQuery] = useState('');
-  const [region, setRegion] = useState<Region | 'all'>('all');
+  const items = useMemo(() => asItems(thoughts ?? []), [thoughts]);
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [focus, setFocus] = useState<{ nodeId: string | null; token: number } | null>(null);
+  const [inspectorMinimized, setInspectorMinimized] = useState(false);
+  const [inspectorMaximized, setInspectorMaximized] = useState(false);
+  const [inspectorPos, setInspectorPos] = useState({ x: 80, y: 80 });
   const [captureOpen, setCaptureOpen] = useState(false);
-  const [tilt, setTilt] = useState(0);
+  const dragOffsetRef = useRef({ x: 0, y: 0 });
+  const draggingRef = useRef(false);
+
+  useEffect(() => {
+    function onMove(event: MouseEvent) {
+      if (!draggingRef.current) return;
+      const width = window.innerWidth < 640 ? window.innerWidth - 16 : 420;
+      const height = 200;
+      const x = Math.max(8, Math.min(window.innerWidth - width - 8, event.clientX - dragOffsetRef.current.x));
+      const y = Math.max(8, Math.min(window.innerHeight - height - 8, event.clientY - dragOffsetRef.current.y));
+      setInspectorPos({ x, y });
+    }
+    function onUp() {
+      draggingRef.current = false;
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+  const [query, setQuery] = useState('');
+  const [commandOpen, setCommandOpen] = useState(false);
+  const [importFiles, setImportFiles] = useState<File[]>([]);
+  const [importText, setImportText] = useState('');
+  const [importEntryType, setImportEntryType] = useState<'topic' | 'attachment'>('topic');
+  const [importParentId, setImportParentId] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+  const [aiAnswer, setAiAnswer] = useState('');
+  const [aiRankedIds, setAiRankedIds] = useState<string[]>([]);
+  const [aiReasons, setAiReasons] = useState<Record<string, string>>({});
+  const [aiLoading, setAiLoading] = useState(false);
+  const aiRequestRef = useRef(0);
+  const [importStage, setImportStage] = useState<string | null>(null);
+  const importRunIdRef = useRef(0);
+  const importTimersRef = useRef<number[]>([]);
   const [userId, setUserId] = useState<string | null>(null);
   const [syncLoaded, setSyncLoaded] = useState(false);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
-  const [fireCount, setFireCount] = useState(0);
+  const [clusterNames, , setClusterNames] = useClusterNames();
+  const [tilt, setTilt] = useState(0);
   const [visits, setVisits] = useState<Record<string, string>>(() => loadVisits());
-  const [clusterNames, renameCluster, setClusterNames] = useClusterNames();
-  const now = useNow();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleUserChange = useCallback(async (id: string | null) => {
     setUserId(id);
@@ -58,7 +82,7 @@ export default function App() {
       const state = await loadUserGalaxy(id);
       if (state?.nodes) {
         await db.thoughts.clear();
-        if (state.nodes.length) await db.thoughts.bulkAdd(state.nodes);
+        if (state.nodes.length) await db.thoughts.bulkAdd(state.nodes as ThoughtNode[]);
       }
       if (state?.clusterNames) {
         const merged = { ...loadClusterNames(), ...state.clusterNames } as Record<Region, string>;
@@ -74,15 +98,11 @@ export default function App() {
     }
   }, [setClusterNames]);
 
-  const focusToken = useRef(0);
-
-  const nodes = useMemo(() => thoughts ?? [], [thoughts]);
-
   useEffect(() => {
     if (!userId || !syncLoaded) return;
     const timer = window.setTimeout(() => {
       void saveUserGalaxy(userId, {
-        nodes,
+        nodes: items as unknown as ThoughtNode[],
         clusterNames,
         tilt,
       })
@@ -93,845 +113,384 @@ export default function App() {
         });
     }, 1200);
     return () => window.clearTimeout(timer);
-  }, [userId, syncLoaded, nodes, clusterNames, tilt]);
-  const theme = getWorldTheme('galaxy');
-
-  const ranked = useMemo(
-    () => rankThoughts(nodes, { query, region }),
-    [nodes, query, region],
-  );
-
-  const filtersActive = query.trim().length > 0 || region !== 'all';
-  const activeIds = useMemo(
-    () => (filtersActive ? new Set(ranked.map((entry) => entry.node.id)) : null),
-    [filtersActive, ranked],
-  );
-
-  /** The three strongest live matches get a soft ring in the 3D scene.
- * We compute `ranked` here for relevance, but `HomeDashboard` receives
- * its own `query`/`setQuery` from the parent `App` component.
- */
-  const emphasisIds = useMemo(() => {
-    if (!query.trim()) return null;
-    const top = ranked.slice(0, 3);
-    return top.length > 0 ? new Set(top.map((entry) => entry.node.id)) : null;
-  }, [query, ranked]);
-
-  const counts = useMemo(() => {
-    const base: Record<Region, number> = {
-      prefrontal: 0,
-      hippocampus: 0,
-      limbic: 0,
-      parietal: 0,
-    };
-    for (const node of nodes) base[node.region] += 1;
-    return base;
-  }, [nodes]);
-
-  const selected = useMemo(
-    () => nodes.find((node) => node.id === selectedId) ?? null,
-    [nodes, selectedId],
-  );
-
-  const focusNode = useCallback((nodeId: string) => {
-    focusToken.current += 1;
-    setSelectedId(nodeId);
-    setFocus({ nodeId, token: focusToken.current });
-    setVisits(recordVisit(nodeId));
-    setFireCount((current) => current + 1);
-  }, []);
-
-  const recenter = useCallback(() => {
-    focusToken.current += 1;
-    setFocus({ nodeId: null, token: focusToken.current });
-  }, []);
-
-  const handleCheckInSaved = useCallback(
-    (node: ThoughtNode) => {
-      focusNode(node.id);
-      setMode('world');
-    },
-    [focusNode],
-  );
-
-  const handlePick = useCallback(
-    (node: ThoughtNode) => {
-      focusNode(node.id);
-    },
-    [focusNode],
-  );
-
-  const handleOverviewPick = useCallback(
-    (node: ThoughtNode) => {
-      focusNode(node.id);
-      // Keep the home dashboard mounted briefly so the neural pulse can fire.
-      window.setTimeout(() => setMode('world'), 750);
-    },
-    [focusNode],
-  );
+  }, [userId, syncLoaded, items, clusterNames, tilt]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setCommandOpen(true);
+      }
       if (event.key === 'Escape') {
-        setSelectedId(null);
-        setMode('world');
+        setCommandOpen(false);
       }
     }
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  const rootStyle: CSSProperties = {
-    background: theme.background,
-    ...({
-      '--hud-surface': theme.hud.surface,
-      '--hud-border': theme.hud.border,
-      '--hud-accent': theme.hud.accent,
-    } as CSSProperties),
-  };
+  useEffect(() => {
+    function onDragOver(event: DragEvent) {
+      event.preventDefault();
+      setDragActive(true);
+    }
+    function onDragLeave(event: DragEvent) {
+      if (!event.relatedTarget) setDragActive(false);
+    }
+    function onDrop(event: DragEvent) {
+      event.preventDefault();
+      setDragActive(false);
+      const files = Array.from(event.dataTransfer?.files ?? []);
+      if (files.length) setImportFiles((prev) => [...prev, ...files]);
+      const text = event.dataTransfer?.getData('text/plain');
+      if (text) setImportText((prev) => (prev ? `${prev}\n${text}` : text));
+    }
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('dragleave', onDragLeave);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('dragleave', onDragLeave);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, []);
 
-  const total = nodes.length;
+  const topics = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; color: string; count: number }>();
+    for (const item of items) {
+      const name = item.topic || 'Untagged';
+      const color = item.topicColor || '#94a3b8';
+      if (!map.has(name)) map.set(name, { id: name, name, color, count: 0 });
+      map.get(name)!.count += 1;
+    }
+    return [...map.values()];
+  }, [items]);
 
+  const selected = useMemo(() => items.find((item) => item.id === selectedId) ?? null, [items, selectedId]);
+
+  const regionCounts = useMemo(() => {
+    const counts = { prefrontal: 0, hippocampus: 0, limbic: 0, parietal: 0 } as Record<Region, number>;
+    for (const item of items) {
+      if (item.region in counts) counts[item.region as Region] += 1;
+    }
+    return counts;
+  }, [items]);
+
+  const rankedThoughts = useMemo<RankedThought[]>(() => rankThoughts(items as unknown as ThoughtNode[], { query, region: 'all' }), [items, query]);
+
+  const aiRankedThoughts = useMemo(() => {
+    if (aiRankedIds.length === 0) return rankedThoughts;
+    const byId = new Map(rankedThoughts.map((entry) => [entry.node.id, entry]));
+    const ranked = aiRankedIds.map((id) => byId.get(id)).filter(Boolean) as RankedThought[];
+    const rest = rankedThoughts.filter((entry) => !aiRankedIds.includes(entry.node.id));
+    return [...ranked, ...rest];
+  }, [aiRankedIds, rankedThoughts]);
+
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (trimmed.length < 3) {
+      setAiRankedIds([]);
+      setAiAnswer('');
+      setAiReasons({});
+      setAiLoading(false);
+      return;
+    }
+    const requestId = ++aiRequestRef.current;
+    setAiLoading(true);
+    const timer = window.setTimeout(() => {
+      void searchWithAI({
+        query,
+        items: items.map((item) => ({
+          id: item.id,
+          title: item.title,
+          topic: item.topic,
+          summary: item.summary,
+          extractedText: item.extractedText,
+        })),
+      })
+        .then((result) => {
+          if (requestId !== aiRequestRef.current) return;
+          setAiRankedIds(result.ranked_ids ?? []);
+          setAiAnswer(result.answer ?? '');
+          const reasonMap: Record<string, string> = {};
+          for (const entry of result.reasons ?? []) {
+            if (entry?.id) reasonMap[entry.id] = entry.why;
+          }
+          setAiReasons(reasonMap);
+        })
+        .catch((error) => {
+          if (requestId !== aiRequestRef.current) return;
+          console.error('AI search failed:', error);
+          setAiRankedIds([]);
+          setAiAnswer('');
+          setAiReasons({});
+        })
+        .finally(() => {
+          if (requestId !== aiRequestRef.current) return;
+          setAiLoading(false);
+        });
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [query, items]);
+
+  async function processSingleImport(
+    file: File | null,
+    text: string,
+    queueLabel: string,
+    runId: number,
+  ) {
+    const files = file ? [file] : [];
+    setImportStage(`${queueLabel}Reading file & preparing payload...`);
+    try {
+      const fileData = await Promise.all(
+        files.map(async (currentFile) => {
+          const isText = currentFile.type.startsWith('text/') || /\.(md|txt)$/i.test(currentFile.name);
+          const prepared = await compressImageForUpload(currentFile);
+          return {
+            name: currentFile.name,
+            mimeType: prepared.type || currentFile.type || 'application/octet-stream',
+            size: prepared.size,
+            text: isText ? await currentFile.text() : undefined,
+            base64: isText ? undefined : await fileToBase64(prepared),
+          };
+        }),
+      );
+
+      const uploads = await Promise.all(files.map((currentFile) => uploadFile(currentFile, userId)));
+
+      if (importRunIdRef.current !== runId) return;
+      setImportStage(`${queueLabel}Analyzing content & extracting concepts...`);
+      const matchingTimer = window.setTimeout(() => {
+        if (importRunIdRef.current === runId) {
+          setImportStage(`${queueLabel}Matching against your Topics & building links...`);
+        }
+      }, 3500);
+      const distillTimer = window.setTimeout(() => {
+        if (importRunIdRef.current === runId) {
+          setImportStage(`${queueLabel}Distilling core takeaway note...`);
+        }
+      }, 8000);
+      importTimersRef.current.push(matchingTimer, distillTimer);
+
+      const result = await organizeWithAI({
+        text,
+        files: fileData,
+        topics: topics.map((topic) => ({ id: topic.id, name: topic.name, color: topic.color })),
+      });
+
+      importTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      importTimersRef.current = [];
+
+      if (importRunIdRef.current !== runId) return;
+      setImportStage(`${queueLabel}Syncing to your MindSpace...`);
+
+      let parentId: string | null = null;
+      if (importEntryType === 'attachment') {
+        parentId =
+          importParentId ||
+          items.find((item) => item.topic === result.topic && item.entryType === 'topic')?.id ||
+          null;
+      }
+
+      const node = await createThought({
+        title: result.title,
+        content: result.summary,
+        type: 'note',
+        region: 'hippocampus',
+        tags: [result.topic, ...result.related_ids],
+        moodScore: null,
+        attachments: [],
+      });
+
+      for (const currentFile of files) {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await addAttachment(node.id, currentFile);
+        } catch (error) {
+          console.warn('Local attachment store failed:', error);
+        }
+      }
+
+      const enriched = {
+        ...node,
+        title: result.title,
+        content: text.trim() || result.summary,
+        topic: result.topic,
+        topicColor: result.topic_color,
+        summary: result.summary,
+        distilledNote: result.distilled_note,
+        extractedText: result.extracted_text,
+        entryType: importEntryType,
+        parentId,
+        relatedIds: result.related_ids ?? [],
+        links: result.related_ids ?? [],
+        storagePath: uploads[0]?.path ?? null,
+      } as unknown as ThoughtNode;
+      await db.thoughts.put(enriched);
+      await recordNoteVersion(enriched as unknown as MindItem);
+
+      if (importRunIdRef.current !== runId) return;
+      setImportStage(`${queueLabel}Organized into ${result.topic}`);
+      await new Promise((resolve) => window.setTimeout(resolve, 900));
+
+      setSelectedId(node.id);
+    } catch (error) {
+      console.error('Import failed:', error);
+      setSyncStatus(`Import failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async function runImport() {
+    if (importFiles.length === 0 && !importText.trim()) return;
+    const runId = ++importRunIdRef.current;
+    importTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    importTimersRef.current = [];
+
+    const jobs: Array<{ file: File | null; text: string }> = [];
+    if (importFiles.length > 0) {
+      for (const file of importFiles) jobs.push({ file, text: '' });
+    }
+    if (importText.trim()) jobs.push({ file: null, text: importText });
+    const total = jobs.length;
+
+    try {
+      for (let index = 0; index < jobs.length; index += 1) {
+        if (importRunIdRef.current !== runId) return;
+        const job = jobs[index];
+        const queueLabel = total > 1 ? `Processing file ${index + 1} of ${total} — ` : '';
+        // eslint-disable-next-line no-await-in-loop
+        await processSingleImport(job.file, job.text, queueLabel, runId);
+      }
+      if (importRunIdRef.current !== runId) return;
+      setImportFiles([]);
+      setImportText('');
+      setImportParentId(null);
+    } catch (error) {
+      console.error('Import failed:', error);
+      setSyncStatus(`Import failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      importTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      importTimersRef.current = [];
+      if (importRunIdRef.current === runId) {
+        setImportStage(null);
+      }
+    }
+  }
+
+  const hasPendingImport = importFiles.length > 0 || importText.trim().length > 0;
+
+  void commandOpen;
+  void setCommandOpen;
+  void setImportEntryType;
+  void dragActive;
+  void setDragActive;
+  void importStage;
+  void setImportStage;
+  void visits;
+  void setVisits;
+  void fileInputRef;
+  void searchInputRef;
+  void selected;
+  void setSelectedId;
+  void runImport;
+  void hasPendingImport;
   return (
-    <main className="relative h-[100dvh] w-full overflow-hidden" style={rootStyle}>
-      <div className="absolute inset-0">
-        <WorldCanvas
-          thoughts={nodes}
-          themeId={themeId}
-          clusterNames={clusterNames}
-          selectedId={selectedId}
-          activeIds={activeIds}
-          emphasisIds={emphasisIds}
-          focus={focus}
-          homeMode={mode === 'home'}
-          tilt={tilt}
-          onSelect={focusNode}
-        />
-      </div>
-
-      {mode === 'world' && (
-        <div className="pointer-events-none absolute inset-0 z-10 bg-[radial-gradient(130%_120%_at_50%_50%,transparent_58%,rgba(0,0,0,0.5)_100%)]" />
-      )}
-
-      <div className="pointer-events-auto absolute inset-x-0 top-0 z-20 flex items-center gap-2 overflow-x-auto px-3 py-2 touch-pan-x scrollbar-none">
-        {mode === 'world' && (
+    <main className="relative h-[100dvh] w-full overflow-hidden bg-[#000000] text-zinc-100">
+      <div className="absolute inset-x-0 top-0 z-30 flex flex-wrap items-center gap-2 bg-transparent px-3 py-2">
+        <div className="min-w-0 flex-1 basis-full sm:basis-auto">
           <SearchPanel
-            className="shrink-0"
             query={query}
-            clusterNames={clusterNames}
-            onRenameCluster={renameCluster}
             onQueryChange={setQuery}
-            region={region}
-            onRegionChange={setRegion}
-            ranked={ranked}
-            counts={counts}
-            total={total}
-            onPick={handlePick}
+            region="all"
+            onRegionChange={() => {}}
+            ranked={aiRankedThoughts}
+            counts={regionCounts}
+            total={items.length}
+            onPick={(node) => {
+              setSelectedId(node.id);
+              setVisits(recordVisit(node.id));
+            }}
+            clusterNames={clusterNames}
+            loading={aiLoading}
+            aiAnswer={aiAnswer}
+            aiReasons={aiReasons}
           />
-        )}
-        {mode === 'world' && (
-          <input
-            type="range"
-            min={-60}
-            max={60}
-            step={1}
-            value={Math.round((tilt * 180) / Math.PI)}
-            onChange={(event) => setTilt((Number(event.target.value) * Math.PI) / 180)}
-            className="galaxy-tilt shrink-0 w-32 sm:w-48"
-            title="Tilt galaxy"
-          />
-        )}
-        {mode === 'world' && (
-          <button
-            type="button"
-            onClick={recenter}
-            className="hud-chip shrink-0"
-            title="Recenter the camera"
-          >
-            ⌖ <span className="hidden lg:inline">Recenter</span>
-          </button>
-        )}
-        <AuthPanel onUserChange={handleUserChange} status={syncStatus} />
-        <TogglePill
-          value={mode}
-          onChange={(next) => setMode(next)}
-          localOnly
-        />
+        </div>
+        <div className="shrink-0">
+          <AuthPanel onUserChange={handleUserChange} status={syncStatus} />
+        </div>
       </div>
+      <section className="absolute inset-0 bg-black pt-16">
+        <TopicGraph items={items} selectedId={selectedId} onSelect={setSelectedId} />
+      </section>
 
-      {mode === 'home' && (
-        <HomeDashboard
-          thoughts={nodes}
-          visits={visits}
-          now={now}
-          onClose={() => setMode('world')}
-          onSaved={handleCheckInSaved}
-          onCapture={() => {}}
-          onPick={handleOverviewPick}
-          query={query}
-          setQuery={setQuery}
-          fireCount={fireCount}
-          clusterNames={clusterNames}
-        />
+      {selected && (
+        <div
+          className="fixed z-40 overflow-hidden rounded-2xl border border-[#1f1f1f] bg-[#09090b]/95 shadow-2xl"
+          style={
+            inspectorMaximized
+              ? { inset: 0, width: '100%', height: '100%' }
+              : inspectorMinimized
+                ? { left: inspectorPos.x, top: inspectorPos.y, width: 260, height: 44 }
+                : { left: inspectorPos.x, top: inspectorPos.y, width: 'min(420px, 90vw)', height: '70vh' }
+          }
+        >
+          <div
+            className="flex cursor-move items-center justify-between border-b border-[#1f1f1f] bg-black/60 px-3 py-2"
+            onMouseDown={(event) => {
+              if (inspectorMaximized) return;
+              draggingRef.current = true;
+              dragOffsetRef.current = { x: event.clientX - inspectorPos.x, y: event.clientY - inspectorPos.y };
+            }}
+          >
+            <span className="text-xs font-medium text-zinc-300">{selected.title}</span>
+            <div className="flex items-center gap-1">
+              <button type="button" onClick={() => setInspectorMinimized((v) => !v)} className="rounded px-2 text-xs text-zinc-400 hover:text-white">
+                {inspectorMinimized ? '□' : '_'}
+              </button>
+              <button type="button" onClick={() => { setInspectorMaximized((v) => !v); setInspectorMinimized(false); }} className="rounded px-2 text-xs text-zinc-400 hover:text-white">
+                {inspectorMaximized ? '❐' : '▢'}
+              </button>
+              <button type="button" onClick={() => setSelectedId(null)} className="rounded px-2 text-xs text-zinc-400 hover:text-white">
+                ×
+              </button>
+            </div>
+          </div>
+          {!inspectorMinimized && (
+            <div className="h-[calc(100%-40px)] overflow-y-auto">
+              <NodeInspector
+                node={selected as unknown as any}
+                thoughts={items as unknown as any}
+                touchedAt={selectedId ? visits[selectedId] ?? null : null}
+                onClose={() => setSelectedId(null)}
+                onFocus={(id) => {
+                  setSelectedId(id);
+                  setVisits(recordVisit(id));
+                }}
+              />
+            </div>
+          )}
+        </div>
       )}
 
-      <div className="pointer-events-auto absolute bottom-4 left-4 z-20">
-        <button
-          type="button"
-          onClick={() => setCaptureOpen(true)}
-          className="hud-chip"
-          title="Capture text or files"
-        >
-          ✎ Capture
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={() => setCaptureOpen(true)}
+        className="fixed bottom-4 left-4 z-40 rounded-full border border-[#1f1f1f] bg-[#09090b]/90 px-4 py-2 text-sm font-medium text-white shadow-lg backdrop-blur hover:bg-white/10"
+      >
+        + Capture
+      </button>
 
       {captureOpen && (
         <CapturePage
           onClose={() => setCaptureOpen(false)}
           onSaved={(node) => {
-            focusNode(node.id);
+            setSelectedId(node.id);
+            setVisits(recordVisit(node.id));
             setCaptureOpen(false);
-            setMode('world');
           }}
         />
       )}
-
-
-      <NodeInspector
-        node={selected}
-        thoughts={nodes}
-        touchedAt={selectedId ? visits[selectedId] ?? null : null}
-        onClose={() => setSelectedId(null)}
-        onFocus={focusNode}
-      />
-
     </main>
-  );
-}
-
-function HomeDashboard({
-  thoughts,
-  visits,
-  now,
-  onClose,
-  onSaved,
-  onCapture: _onCapture,
-  onPick,
-  query,
-  setQuery,
-  fireCount,
-  clusterNames,
-}: {
-  thoughts: ThoughtNode[];
-  visits: Record<string, string>;
-  now: Date;
-  onClose: () => void;
-  onSaved: (node: ThoughtNode) => void;
-  onCapture: () => void;
-  onPick: (node: ThoughtNode) => void;
-  query: string;
-  setQuery: (value: string | ((prev: string) => string)) => void;
-  fireCount: number;
-  clusterNames?: Record<Region, string>;
-}) {
-  const [region, setRegion] = useState<Region | 'all'>('all');
-  const counts = useMemo(() => {
-    const base: Record<Region, number> = {
-      prefrontal: 0,
-      hippocampus: 0,
-      limbic: 0,
-      parietal: 0,
-    };
-    for (const node of thoughts) base[node.region] += 1;
-    return base;
-  }, [thoughts]);
-  const ranked = useMemo(() => rankThoughts(thoughts, { query, region }), [thoughts, query, region]);
-
-  return (
-    <>
-      <aside
-        role="dialog"
-        aria-label="Home telemetry dashboard"
-        className="pointer-events-auto hud-panel absolute left-1/2 top-24 z-20 w-full max-w-[1100px] -translate-x-1/2 p-4 touch-pan-y overscroll-contain sm:static sm:inset-0 sm:max-w-none sm:translate-x-0 sm:flex sm:flex-col"
-      >
-        <div className="mb-3">
-          <SearchPanel
-            query={query}
-            onQueryChange={setQuery}
-            region={region}
-            onRegionChange={setRegion}
-            ranked={ranked}
-            counts={counts}
-            total={thoughts.length}
-            onPick={onPick}
-            clusterNames={clusterNames}
-            searchLabel="Search every page, thought, and connection…"
-          />
-        </div>
-        <div className="flex flex-col gap-4 overflow-y-auto sm:overflow-y-visible lg:grid lg:grid-cols-[1fr_360px] lg:items-start">
-          <div className="flex flex-wrap items-start gap-2">
-            <TelemetryKpis thoughts={thoughts} visits={visits} now={now} />
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <LinesFiredCard thoughts={thoughts} />
-            <TodayFeelingCard thoughts={thoughts} now={now} />
-            <NeuronVisualizer fireCount={fireCount} />
-          </div>
-
-          <FileManager thoughts={thoughts} clusterNames={clusterNames} onPick={onPick} />
-
-          <div className="space-y-4 lg:border-l lg:border-white/10 lg:pl-6 lg:pr-4 lg:pt-2">
-            <TelemetryTrend thoughts={thoughts} now={now} />
-
-            <TelemetryGroupBreakdown thoughts={thoughts} now={now} />
-
-            <section className="border-t border-white/5 pt-3">
-              <div className="flex items-baseline justify-between gap-2">
-                <h3 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                  Most connected
-                </h3>
-                <span className="text-[10px] text-slate-500">ranked by link count</span>
-              </div>
-              <MostConnectedList thoughts={thoughts} onPick={(node) => onPick(node)} />
-
-            </section>
-
-            <section className="border-t border-white/5 pt-3 flex flex-col gap-3">
-              <RecentActivityList thoughts={thoughts} />
-              <CheckInForHome onSaved={onSaved} />
-            </section>
-          </div>
-        </div>
-
-        <div className="mt-3 flex justify-end">
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-400 transition hover:border-white/25 hover:text-white"
-          >
-            Back to 3D view
-          </button>
-        </div>
-      </aside>
-    </>
-  );
-}
-
-function TelemetryKpis({ thoughts, visits, now }: { thoughts: ThoughtNode[]; visits: Record<string, string>; now: Date }) {
-  const totalLinks = useMemo(() => {
-    const pairs = new Set<string>();
-    for (const node of thoughts) {
-      for (const targetId of node.links) {
-        if (targetId === node.id) continue;
-        pairs.add(node.id < targetId ? `${node.id}|${targetId}` : `${targetId}|${node.id}`);
-      }
-    }
-    return pairs.size;
-  }, [thoughts]);
-
-  const updatedThisWeek = useMemo(() => {
-    const since = now.getTime() - 7 * 86_400_000;
-    return thoughts.filter((node) => {
-      const created = new Date(node.createdAt).getTime();
-      if (Number.isFinite(created) && created >= since) return true;
-      const touched = visits[node.id] ? new Date(visits[node.id]).getTime() : NaN;
-      return Number.isFinite(touched) && touched >= since;
-    }).length;
-  }, [thoughts, visits, now]);
-
-  const totalTypes = new Set(thoughts.map((node) => node.type)).size;
-  const totalRegions = new Set(thoughts.map((node) => node.region)).size;
-  const weekPercent = thoughts.length > 0 ? Math.round((updatedThisWeek / thoughts.length) * 100) : 0;
-
-  return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-      <TelemetryCard
-        label="Total items"
-        value={thoughts.length}
-        accent={REGION_META.prefrontal.accent}
-        barPercent={thoughts.length > 0 ? 100 : 0}
-      />
-      <TelemetryCard
-        label="Type / section"
-        value={`${totalTypes} · ${totalRegions}`}
-        accent={REGION_META.hippocampus.accent}
-        barPercent={100}
-      />
-      <TelemetryCard
-        label="Total links"
-        value={totalLinks}
-        accent={REGION_META.parietal.accent}
-        barPercent={totalLinks > 0 ? 100 : 0}
-      />
-      <TelemetryCard
-        label="Updated this week"
-        value={updatedThisWeek}
-        accent={REGION_META.limbic.accent}
-        badgePercent={weekPercent}
-        barPercent={weekPercent}
-      />
-    </div>
-  );
-}
-
-function TelemetryCard({ label, value, accent, barPercent, badgePercent }: {
-  label: string;
-  value: string | number;
-  accent: string;
-  barPercent: number;
-  badgePercent?: number;
-}) {
-  return (
-    <div className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
-      <div className="flex items-baseline justify-between gap-2">
-        <p className="text-[10px] uppercase tracking-[0.14em] text-slate-500">{label}</p>
-        {badgePercent !== undefined && (
-          <span className="rounded-full bg-white/5 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-slate-300">
-            {badgePercent}%
-          </span>
-        )}
-      </div>
-      <p className="mt-1 text-2xl font-semibold leading-none text-white tabular-nums">{value}</p>
-      <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-white/5">
-        <div
-          className="h-full rounded-full"
-          style={{
-            width: `${Math.max(2, Math.min(100, barPercent))}%`,
-            backgroundColor: accent,
-          }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function TelemetryTrend({ thoughts, now }: { thoughts: ThoughtNode[]; now: Date }) {
-  const series = useMemo(() => buildActivitySeries(thoughts, now, 14), [thoughts, now]);
-  const max = Math.max(1, ...series.map((point) => point.count));
-
-  return (
-    <section className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
-      <div className="flex items-baseline justify-between gap-2">
-        <h3 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-          Activity / updates over time
-        </h3>
-        <span className="text-[10px] text-slate-500">last 14 days</span>
-      </div>
-      <div className="mt-3 flex h-24 gap-[2px]" role="img" aria-label="Daily captures over the last 14 days">
-        {series.map((point) => (
-          <div
-            key={point.key}
-            className="relative flex-1 flex flex-col justify-end"
-            title={`${point.label}: ${point.count} ${point.count === 1 ? 'capture' : 'captures'}`}
-          >
-            <div
-              className="rounded-t-sm"
-              style={{
-                height: `${Math.max(point.count > 0 ? 12 : 3, (point.count / max) * 100)}%`,
-                backgroundColor: 'var(--hud-accent)',
-                opacity: point.count > 0 ? 0.55 : 0.14,
-              }}
-            />
-          </div>
-        ))}
-      </div>
-      <div className="mt-1 flex justify-between text-[9px] uppercase tracking-[0.14em] text-slate-600">
-        <span>{series[0]?.label}</span>
-        <span>today</span>
-      </div>
-    </section>
-  );
-}
-
-function TelemetryGroupBreakdown({ thoughts, now }: { thoughts: ThoughtNode[]; now: Date }) {
-  const week: WeekSummary = useMemo(() => summarizeWeek(thoughts, now), [thoughts, now]);
-  const max = Math.max(1, ...Object.values(week.regions));
-
-  return (
-    <section className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
-      <h3 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-        Breakdown by group / unit
-      </h3>
-      <div className="mt-2 grid gap-2 sm:grid-cols-2">
-        {REGIONS.map((region) => {
-          const meta = REGION_META[region];
-          const count = week.regions[region];
-          return (
-            <div key={region} className="flex items-center gap-2 text-[10px]">
-              <span className="w-[74px] shrink-0 truncate text-slate-400">
-                {loadClusterNames()[region] ?? meta.label}
-              </span>
-              <div className="flex-1 overflow-hidden rounded-full bg-white/5">
-                <div
-                  className="h-full rounded-full"
-                  style={{
-                    width: `${(count / max) * 100}%`,
-                    backgroundColor: meta.accent,
-                  }}
-                />
-              </div>
-              <span className="w-4 text-right font-medium text-slate-300">
-                {count}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-
-      {week.tags.length > 0 && (
-        <div className="mt-3">
-          <p className="text-[10px] uppercase tracking-[0.14em] text-slate-600">Tags this week</p>
-          <ul className="mt-1.5 flex flex-col gap-2">
-            {week.tags.slice(0, 4).map(({ tag, count }) => (
-              <li key={tag} className="flex items-center gap-2 text-[10px]">
-                <span className="truncate text-slate-300">#{tag}</span>
-                <div className="flex-1 overflow-hidden rounded-full bg-white/5">
-                  <div
-                    className="h-full rounded-full"
-                    style={{
-                      width: `${(count / week.tags[0].count) * 100}%`,
-                      backgroundColor: 'var(--hud-accent)',
-                    }}
-                  />
-                </div>
-                <span className="w-4 text-right text-slate-500">{count}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </section>
-  );
-}
-
-function MostConnectedList({ thoughts, onPick }: { thoughts: ThoughtNode[]; onPick: (node: ThoughtNode) => void }) {
-  const ranked = useMemo(() => {
-    const neighbors = new Map<string, number>();
-    for (const node of thoughts) neighbors.set(node.id, 0);
-    for (const node of thoughts) {
-      for (const targetId of node.links) {
-        if (targetId === node.id || !neighbors.has(targetId)) continue;
-        neighbors.set(node.id, (neighbors.get(node.id) ?? 0) + 1);
-      }
-    }
-    return thoughts
-      .map((node) => ({ node, degree: neighbors.get(node.id) ?? 0 }))
-      .filter((entry) => entry.degree > 0)
-      .sort((a, b) => b.degree - a.degree || a.node.title.localeCompare(b.node.title))
-      .slice(0, 6);
-  }, [thoughts]);
-
-  if (ranked.length === 0) {
-    return (
-      <p className="mt-1.5 text-[11px] text-slate-500">
-        No explicit links yet — connect two thoughts to start a constellation.
-      </p>
-    );
-  }
-
-  return (
-    <ul className="mt-1.5 flex flex-col gap-1">
-      {ranked.map(({ node, degree }) => (
-        <li key={node.id}>
-          <button
-            type="button"
-            onClick={() => onPick(node)}
-            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-white/5"
-          >
-            <span
-              className="h-1.5 w-1.5 shrink-0 rounded-full"
-              style={{ backgroundColor: REGION_META[node.region].accent }}
-            />
-            <span className="min-w-0 flex-1 truncate text-xs text-slate-200">
-              {node.title}
-            </span>
-            <span className="shrink-0 text-[10px] tabular-nums text-slate-500">
-              {degree} {degree === 1 ? 'link' : 'links'}
-            </span>
-          </button>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function RecentActivityList({ thoughts }: { thoughts: ThoughtNode[] }) {
-  const recent = useMemo(() => {
-    return [...thoughts]
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      .slice(0, 4);
-  }, [thoughts]);
-
-  return (
-    <>
-      <h3 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-        Recent activity
-      </h3>
-      <ul className="mt-1.5 flex flex-col gap-1">
-        {recent.map((node) => (
-          <li key={node.id} className="flex items-center gap-2 text-[10px]">
-            <span
-              className="h-1.5 w-1.5 shrink-0 rounded-full"
-              style={{ backgroundColor: REGION_META[node.region].accent }}
-            />
-            <span className="min-w-0 flex-1 truncate text-slate-300">{node.title}</span>
-            <span className="shrink-0 text-slate-500">
-              {relativeTime(node.createdAt)}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </>
-  );
-}
-
-function LinesFiredCard({ thoughts }: { thoughts: ThoughtNode[] }) {
-  const totalLinks = useMemo(() => {
-    const pairs = new Set<string>();
-    for (const node of thoughts) {
-      for (const targetId of node.links) {
-        if (targetId === node.id) continue;
-        pairs.add(node.id < targetId ? `${node.id}|${targetId}` : `${targetId}|${node.id}`);
-      }
-    }
-    return pairs.size;
-  }, [thoughts]);
-
-  const directed = thoughts.reduce((sum, node) => sum + node.links.length, 0);
-  const neuronsWithLinks = thoughts.filter((node) => node.links.length > 0).length;
-
-  return (
-    <section className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
-      <h3 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-        Lines fired
-      </h3>
-      <p className="mt-1 text-2xl font-semibold leading-none text-white tabular-nums">
-        {totalLinks}
-      </p>
-      <p className="mt-1 text-[10px] text-slate-500">
-        {directed} directed · {neuronsWithLinks} neurons connected
-      </p>
-      <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-white/5">
-        <div
-          className="h-full rounded-full"
-          style={{
-            width: `${Math.min(100, totalLinks * 4)}%`,
-            backgroundColor: 'var(--hud-accent)',
-          }}
-        />
-      </div>
-    </section>
-  );
-}
-
-function TodayFeelingCard({ thoughts, now }: { thoughts: ThoughtNode[]; now: Date }) {
-  const estimate = useMemo(() => estimateTodayMood(thoughts, now), [thoughts, now]);
-  const tone =
-    estimate.score > 0
-      ? 'text-emerald-300'
-      : estimate.score < 0
-        ? 'text-rose-300'
-        : 'text-slate-300';
-
-  return (
-    <section className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
-      <h3 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-        Feeling today (estimate)
-      </h3>
-      <p className={`mt-1 text-2xl font-semibold leading-none tabular-nums ${tone}`}>
-        {estimate.score > 0 ? `+${estimate.score}` : estimate.score}
-      </p>
-      <p className="mt-1 text-[10px] text-slate-400">{estimate.label}</p>
-      {estimate.source && (
-        <p className="mt-1 truncate text-[10px] text-slate-500" title={estimate.source}>
-          based on “{estimate.source}”
-        </p>
-      )}
-    </section>
-  );
-}
-
-function NeuronVisualizer({ fireCount }: { fireCount: number }) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const barsRef = useRef<number[]>(Array.from({ length: 24 }, () => 0));
-  const rafRef = useRef<number | null>(null);
-  const [tick, setTick] = useState(0);
-
-  useEffect(() => {
-    const id = window.setInterval(() => setTick((value) => value + 1), 2000);
-    return () => window.clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    if (fireCount === 0 && tick === 0) return;
-
-    // Boost bars.
-    barsRef.current = barsRef.current.map(() => Math.random() * 0.6 + 0.4);
-
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    let start: number | null = null;
-    const duration = 700;
-    if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-
-    function frame(timestamp: number) {
-      if (start === null) start = timestamp;
-      const elapsed = timestamp - start;
-      const progress = Math.min(1, elapsed / duration);
-      const decay = 1 - progress;
-
-      const width = canvas!.width;
-      const height = canvas!.height;
-      ctx!.clearRect(0, 0, width, height);
-      const barCount = barsRef.current.length;
-      const gap = 2;
-      const barWidth = (width - gap * (barCount - 1)) / barCount;
-      for (let i = 0; i < barCount; i += 1) {
-        const base = barsRef.current[i] ?? 0;
-        const h = base * decay * height * 0.9 + 2;
-        const x = i * (barWidth + gap);
-        const y = height - h;
-        ctx!.fillStyle = 'rgba(99, 179, 237, 0.85)';
-        ctx!.fillRect(x, y, barWidth, h);
-      }
-
-      if (progress < 1) {
-        rafRef.current = requestAnimationFrame(frame);
-      } else {
-        ctx!.clearRect(0, 0, width, height);
-        rafRef.current = null;
-      }
-    }
-    rafRef.current = requestAnimationFrame(frame);
-
-    return () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-    };
-  }, [fireCount, tick]);
-
-  return (
-    <section className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
-      <div className="flex items-baseline justify-between gap-2">
-        <h3 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-          Neural pulse
-        </h3>
-        <span className="text-[10px] text-slate-500">{fireCount} fired</span>
-      </div>
-      <canvas
-        ref={canvasRef}
-        width={240}
-        height={48}
-        className="mt-2 h-12 w-full rounded-lg bg-black/30"
-      />
-      <p className="mt-1 text-[10px] text-slate-500">
-        Fires on every neuron selection.
-      </p>
-    </section>
-  );
-}
-
-function FileManager({
-  thoughts,
-  clusterNames,
-  onPick,
-}: {
-  thoughts: ThoughtNode[];
-  clusterNames?: Record<Region, string>;
-  onPick: (node: ThoughtNode) => void;
-}) {
-  const grouped = useMemo(() => {
-    const map = new Map<Region, ThoughtNode[]>();
-    for (const region of REGIONS) map.set(region, []);
-    for (const node of thoughts) map.get(node.region)?.push(node);
-    for (const members of map.values()) {
-      members.sort((a, b) => a.title.localeCompare(b.title));
-    }
-    return map;
-  }, [thoughts]);
-
-  return (
-    <section className="rounded-xl border border-white/5 bg-white/[0.03] p-3">
-      <div className="flex items-baseline justify-between gap-2">
-        <h3 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-          File manager
-        </h3>
-        <span className="text-[10px] text-slate-500">clusters · topics · planets</span>
-      </div>
-      <div className="mt-2 space-y-3">
-        {REGIONS.map((region) => {
-          const members = grouped.get(region) ?? [];
-          const name = clusterNames?.[region] ?? REGION_META[region].label;
-          return (
-            <div key={region} className="rounded-lg border border-white/5 bg-black/20 p-2">
-              <div className="flex items-center gap-2">
-                <span
-                  className="h-2 w-2 rounded-full"
-                  style={{ backgroundColor: REGION_META[region].accent }}
-                />
-                <span className="text-[11px] font-semibold text-slate-200">{name}</span>
-                <span className="text-[10px] text-slate-500">{members.length}</span>
-              </div>
-              {members.length === 0 ? (
-                <p className="mt-1 text-[10px] text-slate-500">Empty cluster</p>
-              ) : (
-                <ul className="mt-1.5 flex flex-col gap-1">
-                  {members.map((node) => (
-                    <li key={node.id} className="rounded-md bg-white/[0.03] px-2 py-1.5">
-                      <button
-                        type="button"
-                        onClick={() => onPick(node)}
-                        className="flex w-full items-center gap-2 text-left transition hover:text-white"
-                      >
-                        <span className="text-[10px] text-slate-400">📄</span>
-                        <span className="min-w-0 flex-1 truncate text-xs text-slate-200">
-                          {node.title}
-                        </span>
-                        {node.attachments.length > 0 && (
-                          <span className="shrink-0 text-[10px] text-slate-500">
-                            {node.attachments.length} planet{node.attachments.length === 1 ? '' : 's'}
-                          </span>
-                        )}
-                      </button>
-                      {node.attachments.length > 0 && (
-                        <ul className="mt-1 flex flex-col gap-0.5 pl-5">
-                          {node.attachments.map((attachment) => (
-                            <li
-                              key={attachment.id}
-                              className="flex items-center gap-1.5 text-[10px] text-slate-400"
-                            >
-                              <span>🪐</span>
-                              <span className="truncate">{attachment.name}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function CheckInForHome({ onSaved }: { onSaved: (node: ThoughtNode) => void }) {
-  return (
-    <div className="flex flex-col gap-2">
-      <h3 className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-        Check-in / nudges
-      </h3>
-      <p className="text-[10px] text-slate-500">
-        Log a mood or name today's unit so this week gets shape.
-      </p>
-      <CheckInForm onSaved={onSaved} compact />
-    </div>
   );
 }

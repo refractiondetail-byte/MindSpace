@@ -63,22 +63,25 @@ export function OrbitalArcs() {
     return material;
   }), []);
   const glowMaterialRefs = useRef<Array<THREE.LineBasicMaterial | null>>([]);
-  useFrame((state) => {
+  const timeRef = useRef(0);
+  useFrame((_, delta) => {
+    timeRef.current += delta;
+    const time = timeRef.current;
     groups.current.forEach((group, index) => {
       if (!group) return;
       const arc = ARCS[index];
-      group.rotation.y = arc.offset + state.clock.elapsedTime * arc.speed;
+      group.rotation.y = arc.offset + time * arc.speed;
 
       const glow = glowMaterials[index];
       if (!glow) return;
-      const pulse = 0.5 + 0.5 * Math.sin(state.clock.elapsedTime * (arc.pulseSpeed ?? 0.5) + index * 1.3);
+      const pulse = 0.5 + 0.5 * Math.sin(time * (arc.pulseSpeed ?? 0.5) + index * 1.3);
       glow.opacity = arc.opacity * pulse * pulse * 0.9;
     });
 
     glowMaterialRefs.current.forEach((glow, glowIndex) => {
       if (!glow) return;
       const arc = ARCS[glowIndex];
-      const pulse = 0.5 + 0.5 * Math.sin(state.clock.elapsedTime * (arc.pulseSpeed ?? 0.5) + glowIndex * 1.3);
+      const pulse = 0.5 + 0.5 * Math.sin(time * (arc.pulseSpeed ?? 0.5) + glowIndex * 1.3);
       glow.opacity = arc.opacity * pulse * pulse * 0.9;
     });
   });
@@ -150,6 +153,7 @@ function Streak({ spec }: { spec: StreakSpec }) {
     buffer.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
     return buffer;
   }, []);
+  const timeRef = useRef(0);
   const start = useMemo(() => new THREE.Vector3(...spec.start), [spec.start]);
   const direction = useMemo(
     () => new THREE.Vector3(...spec.direction).normalize(),
@@ -158,9 +162,11 @@ function Streak({ spec }: { spec: StreakSpec }) {
 
   useEffect(() => () => geometry.dispose(), [geometry]);
 
-  useFrame((state) => {
+  useFrame((_, delta) => {
+    timeRef.current += delta;
+    const time = timeRef.current;
     const activeWindow = 0.28;
-    const phase = ((state.clock.elapsedTime + spec.delay) % spec.period) / spec.period;
+    const phase = ((time + spec.delay) % spec.period) / spec.period;
     const active = phase < activeWindow;
     const progress = active ? phase / activeWindow : 1;
     const alpha = active

@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import {
@@ -119,8 +119,10 @@ export function BrainShell() {
     [cerebrum, cerebellum, gyri, folia, skin, folds, rim],
   );
 
-  useFrame((state) => {
-    rim.uniforms.uTime.value = state.clock.elapsedTime;
+  const timeRef = useRef(0);
+  useFrame((_, delta) => {
+    timeRef.current += delta;
+    rim.uniforms.uTime.value = timeRef.current;
   });
 
   return (

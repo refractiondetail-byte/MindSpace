@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { Billboard } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
@@ -199,9 +199,11 @@ export function DistantGalaxies() {
     [geometry, materials],
   );
 
-  useFrame((state) => {
+  const timeRef = useRef(0);
+  useFrame((_, delta) => {
+    timeRef.current += delta;
     for (const material of materials) {
-      material.uniforms.uTime.value = state.clock.elapsedTime;
+      material.uniforms.uTime.value = timeRef.current;
     }
   });
 

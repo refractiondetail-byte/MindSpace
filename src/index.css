@@ -2,6 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+@property --search-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
 :root {
   color-scheme: dark;
   --hud-surface: rgba(14, 10, 28, 0.64);
@@ -125,5 +131,102 @@ canvas {
   .scroll-thin::-webkit-scrollbar-thumb {
     background-color: rgba(148, 163, 184, 0.3);
     border-radius: 999px;
+  }
+}
+
+.search-outline {
+  position: relative;
+  border-radius: 1rem;
+  padding: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  transition: background 220ms ease, box-shadow 220ms ease;
+}
+
+.search-outline:focus-within {
+  background: conic-gradient(
+    from var(--search-angle),
+    rgba(168, 85, 247, 0.9),
+    rgba(56, 189, 248, 0.9),
+    rgba(52, 211, 153, 0.9),
+    rgba(168, 85, 247, 0.9)
+  );
+  animation: search-outline-spin 2.6s linear infinite;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.04), 0 0 24px -12px rgba(168, 85, 247, 0.45);
+}
+
+@keyframes search-outline-spin {
+  to {
+    --search-angle: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .search-outline:focus-within {
+    animation: none;
+    background: linear-gradient(135deg, rgba(168, 85, 247, 0.55), rgba(56, 189, 248, 0.45), rgba(52, 211, 153, 0.45));
+  }
+}
+
+.search-outline > * {
+  border-radius: calc(1rem - 1px);
+}
+
+.search-outline:focus-within input {
+  color: #000000;
+  background-color: rgba(255, 255, 255, 0.92);
+  border-color: rgba(0, 0, 0, 0.12);
+}
+
+.search-outline:focus-within input::placeholder {
+  color: #52525b;
+}
+
+.import-progress__shimmer {
+  background: linear-gradient(90deg, transparent, rgba(168, 85, 247, 0.9), rgba(56, 189, 248, 0.9), rgba(52, 211, 153, 0.9), transparent);
+  transform: translateX(-100%);
+  animation: import-shimmer 1.8s linear infinite;
+}
+
+.import-progress__dot {
+  animation: import-pulse 1.2s ease-in-out infinite;
+}
+
+.import-progress__label {
+  animation: import-fade-slide 260ms ease-out;
+}
+
+@keyframes import-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes import-pulse {
+  0%, 100% {
+    opacity: 0.45;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+@keyframes import-fade-slide {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .import-progress__shimmer,
+  .import-progress__dot,
+  .import-progress__label {
+    animation: none;
   }
 }

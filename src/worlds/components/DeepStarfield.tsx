@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
@@ -64,6 +64,7 @@ function mulberry32(seed: number): () => number {
 /** Sparse, color-varied deep-space stars on a distant shell. */
 export function DeepStarfield({ count = 5200 }: { count?: number }) {
   const dpr = useThree((state) => state.viewport.dpr);
+  const timeRef = useRef(0);
 
   const geometry = useMemo(() => {
     const random = mulberry32(730201);
@@ -88,7 +89,7 @@ export function DeepStarfield({ count = 5200 }: { count?: number }) {
       colors[index * 3 + 1] = color.g * brightness;
       colors[index * 3 + 2] = color.b * brightness;
 
-      sizes[index] = random() > 0.985 ? 1.8 + random() * 1.8 : 0.35 + random() * 1.15;
+      sizes[index] = random() > 0.985 ? 1.2 + random() * 1.2 : 0.3 + random() * 0.9;
       alphas[index] = 0.28 + random() * 0.62;
       phases[index] = random();
     }
@@ -107,7 +108,7 @@ export function DeepStarfield({ count = 5200 }: { count?: number }) {
       new THREE.ShaderMaterial({
         uniforms: {
           uTime: { value: 0 },
-          uSize: { value: 1.15 },
+          uSize: { value: 1.35 },
           uDpr: { value: dpr },
         },
         vertexShader: VERTEX,
@@ -127,8 +128,9 @@ export function DeepStarfield({ count = 5200 }: { count?: number }) {
     [geometry, material],
   );
 
-  useFrame((state) => {
-    material.uniforms.uTime.value = state.clock.elapsedTime;
+  useFrame((state, delta) => {
+    timeRef.current += delta;
+    material.uniforms.uTime.value = timeRef.current;
     material.uniforms.uDpr.value = state.viewport.dpr;
   });
 

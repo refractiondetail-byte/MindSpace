@@ -11,19 +11,51 @@ function normalize(value: string): string {
   return value.toLowerCase().normalize('NFKD');
 }
 
+/** Classic Levenshtein edit distance (small strings only). */
+export function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  let curr = new Array<number>(b.length + 1);
+  for (let i = 1; i <= a.length; i += 1) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[b.length];
+}
+
+/**
+ * Single-token fuzzy score (0 = no match, 1 = weak/typo, 2 = prefix, 3 = exact).
+ * Tolerates minor typos via edit distance and bidirectional substring overlap.
+ */
+export function fuzzyMatchToken(token: string, word: string): number {
+  if (!token || !word) return 0;
+  if (word === token) return 3;
+  if (word.startsWith(token)) return 2;
+  if (word.includes(token) || token.includes(word)) return 1;
+  const maxDist = token.length < 5 ? 1 : 2;
+  if (Math.abs(word.length - token.length) <= maxDist) {
+    if (levenshtein(token, word) <= maxDist) return 1;
+  }
+  return 0;
+}
+
 export function tokenize(value: string): string[] {
   return normalize(value)
     .split(/[^a-z0-9]+/)
     .filter((token) => token.length > 0);
 }
 
-/** 0 = no match, higher = better (exact > prefix > substring). */
+/** 0 = no match, higher = better (exact > prefix > substring > typo). */
 function matchToken(token: string, words: string[]): number {
   let best = 0;
   for (const word of words) {
-    if (word === token) best = Math.max(best, 3);
-    else if (word.startsWith(token)) best = Math.max(best, 2);
-    else if (word.includes(token)) best = Math.max(best, 1);
+    best = Math.max(best, fuzzyMatchToken(token, word));
   }
   return best;
 }

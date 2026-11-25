@@ -67,7 +67,7 @@ export function CameraController({ focus, view }: CameraControllerProps) {
         fromTarget,
         toTarget: destination,
         elapsed: 0,
-        duration: 0.9,
+        duration: 0.42,
       };
     } else {
       flight.current = {
@@ -76,7 +76,7 @@ export function CameraController({ focus, view }: CameraControllerProps) {
         fromTarget,
         toTarget: new THREE.Vector3(...view.target),
         elapsed: 0,
-        duration: 1.15,
+        duration: 0.55,
       };
     }
 
@@ -115,7 +115,7 @@ export function CameraController({ focus, view }: CameraControllerProps) {
       ref={controlsRef}
       makeDefault
       enableDamping
-      dampingFactor={0.075}
+      dampingFactor={0.12}
       rotateSpeed={0.6}
       zoomSpeed={0.8}
       minDistance={4}
