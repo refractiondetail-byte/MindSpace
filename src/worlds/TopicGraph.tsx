@@ -22,6 +22,7 @@ interface GraphEdge {
   fromId: string;
   toId: string;
   color: string;
+  control?: THREE.Vector3;
 }
 
 function hashValue(value: string): number {
@@ -805,9 +806,9 @@ function DynamicEdges({
         skel[cursor * 3 + 1] = skeletonRef.current[0].y;
         skel[cursor * 3 + 2] = skeletonRef.current[0].z;
         cursor += 1;
-        skel[cursor * 3] = edge.control.x;
-        skel[cursor * 3 + 1] = edge.control.y;
-        skel[cursor * 3 + 2] = edge.control.z;
+        skel[cursor * 3] = edge.control?.x ?? 0;
+        skel[cursor * 3 + 1] = edge.control?.y ?? 0;
+        skel[cursor * 3 + 2] = edge.control?.z ?? 0;
         cursor += 1;
         skel[cursor * 3] = skeletonRef.current[1].x;
         skel[cursor * 3 + 1] = skeletonRef.current[1].y;

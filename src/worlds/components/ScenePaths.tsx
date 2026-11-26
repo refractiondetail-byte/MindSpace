@@ -273,18 +273,6 @@ export function ScenePaths({
       }
     }
 
-    // Geometric skeleton shared by every packet on the edge (control points).
-    // Kept separately so we can recompute it when an edge endpoint animates.
-    const skeleton = useMemo(
-      () =>
-        visible.map((edge) => ({
-          from: new THREE.Vector3(edge.from[0], edge.from[1], edge.from[2]),
-          control: new THREE.Vector3(edge.control[0], edge.control[1], edge.control[2]),
-          to: new THREE.Vector3(edge.to[0], edge.to[1], edge.to[2]),
-        })),
-      [visible],
-    );
-
     const geometry = new THREE.BufferGeometry();
     // Placeholder positions; the shader recomputes the live point each frame
     // using the animated skeleton, so a zoom doesn't leave packets stranded
@@ -300,28 +288,6 @@ export function ScenePaths({
     geometry.setAttribute('aSkeleton', new THREE.BufferAttribute(new Float32Array(visible.length * 9), 3).setUsage(THREE.DynamicDrawUsage));
     return geometry;
   }, [visible, selectedId, activeIds, color, pulse, perEdge]);
-
-  const pulseMaterial = useMemo(() => {
-    if (!pulse) return null;
-    return new THREE.ShaderMaterial({
-      uniforms: {
-        uTime: { value: 0 },
-        uSize: { value: pulse.size },
-        uSpeed: { value: pulse.speed },
-        uOpacity: { value: pulse.opacity },
-        uDpr: { value: dpr },
-        uVariability: { value: pulse.variability ?? 0.7 },
-        uBurst: { value: pulse.burst ? 1 : 0 },
-        uBurstRate: { value: pulse.burst?.rate ?? 0.12 },
-        uBurstWindow: { value: pulse.burst?.window ?? 0.1 },
-      },
-      vertexShader: PULSE_VERTEX,
-      fragmentShader: PULSE_FRAGMENT,
-      transparent: true,
-      depthWrite: false,
-      blending: THREE.AdditiveBlending,
-    });
-  }, [pulse, dpr]);
 
   useEffect(
     () => () => {
@@ -363,7 +329,6 @@ export function ScenePaths({
           const edge = visible[i];
           const start = skeletonRef.current[0].set(edge.from[0], edge.from[1], edge.from[2]);
           const end = skeletonRef.current[1].set(edge.to[0], edge.to[1], edge.to[2]);
-          const mid = skeletonRef.current[2].copy(start).lerp(end, 0.5);
           skel[cursor * 3] = start.x;
           skel[cursor * 3 + 1] = start.y;
           skel[cursor * 3 + 2] = start.z;
