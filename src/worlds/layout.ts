@@ -19,6 +19,8 @@ export interface CameraView {
   /** Orbit distance used when flying to a node. */
   focusDistance: number;
   maxDistance: number;
+  /** Closest the user can zoom (defaults to 4). */
+  minDistance?: number;
 }
 
 export interface RegionPlacement {
@@ -184,12 +186,12 @@ function edgeControl(from: Vec3, to: Vec3, seed: string): Vec3 {
   const outward: Vec3 =
     radial > 0.001 ? [mid[0] / radial, mid[1] / radial, mid[2] / radial] : [0, 1, 0];
 
-  const bow = length * 0.17 * side;
-  const push = length * 0.12;
+  const bow = length * 0.24 * side;
+  const push = length * 0.16;
 
   return [
     mid[0] + px * bow + outward[0] * push,
-    mid[1] + outward[1] * push + length * 0.03,
+    mid[1] + outward[1] * push + length * 0.08,
     mid[2] + pz * bow + outward[2] * push,
   ];
 }
@@ -282,11 +284,13 @@ function buildProbeEdges(
   allowCrossRegion: boolean,
 ): SceneEdge[] {
   const candidates: { a: ThoughtNode; b: ThoughtNode; distance: number }[] = [];
+  const farCandidates: { a: ThoughtNode; b: ThoughtNode; distance: number }[] = [];
 
   for (let i = 0; i < thoughts.length; i += 1) {
     for (let j = i + 1; j < thoughts.length; j += 1) {
       const a = thoughts[i];
       const b = thoughts[j];
+
       if (!allowCrossRegion && a.region !== b.region) continue;
       if (connected.has(pairKey(a.id, b.id))) continue;
 
@@ -300,25 +304,31 @@ function buildProbeEdges(
         target.position[2] - source.position[2],
       );
       if (distance > maxDistance) continue;
-      candidates.push({ a, b, distance });
+
+      if (distance <= 64) {
+        candidates.push({ a, b, distance });
+      } else {
+        farCandidates.push({ a, b, distance });
+      }
     }
   }
 
   candidates.sort((left, right) => left.distance - right.distance);
+  farCandidates.sort((left, right) => left.distance - right.distance);
 
   const result: SceneEdge[] = [];
   const degree = new Map<string, number>();
-  const LIMIT = 24;
-  const DEGREE_LIMIT = 2;
+  const LIMIT = 260;
+  const DEGREE_LIMIT = 12;
 
-  for (const { a, b } of candidates) {
-    if (result.length >= LIMIT) break;
-    if ((degree.get(a.id) ?? 0) >= DEGREE_LIMIT) continue;
-    if ((degree.get(b.id) ?? 0) >= DEGREE_LIMIT) continue;
+  const tryPush = (a: ThoughtNode, b: ThoughtNode) => {
+    if (result.length >= LIMIT) return false;
+    if ((degree.get(a.id) ?? 0) >= DEGREE_LIMIT) return true;
+    if ((degree.get(b.id) ?? 0) >= DEGREE_LIMIT) return true;
 
     const source = byId.get(a.id);
     const target = byId.get(b.id);
-    if (!source || !target) continue;
+    if (!source || !target) return true;
 
     degree.set(a.id, (degree.get(a.id) ?? 0) + 1);
     degree.set(b.id, (degree.get(b.id) ?? 0) + 1);
@@ -330,6 +340,41 @@ function buildProbeEdges(
       control: edgeControl(source.position, target.position, pairKey(a.id, b.id)),
       color: REGION_META[a.region].accent,
     });
+    return true;
+  };
+
+  for (const { a, b } of candidates) {
+    if (!tryPush(a, b)) break;
+  }
+  for (const { a, b } of farCandidates) {
+    if (!tryPush(a, b)) break;
+  }
+
+  // Guarantee that no planet is left floating alone: connect any node with no
+  // edges to its nearest neighbour, even across solar systems.
+  for (const node of thoughts) {
+    if ((degree.get(node.id) ?? 0) > 0) continue;
+    const source = byId.get(node.id);
+    if (!source) continue;
+
+    let nearest: ThoughtNode | null = null;
+    let nearestDistance = Infinity;
+    for (const candidate of thoughts) {
+      if (candidate.id === node.id) continue;
+      const target = byId.get(candidate.id);
+      if (!target) continue;
+      const distance = Math.hypot(
+        target.position[0] - source.position[0],
+        target.position[1] - source.position[1],
+        target.position[2] - source.position[2],
+      );
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = candidate;
+      }
+    }
+
+    if (nearest && result.length < LIMIT) tryPush(node, nearest);
   }
 
   return result;
@@ -380,7 +425,7 @@ export function buildSceneLayout(
     thoughts,
     byId,
     connected,
-    world === 'galaxy' ? 64 : 12,
+    world === 'galaxy' ? 260 : 12,
     world === 'galaxy',
   );
 

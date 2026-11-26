@@ -7,9 +7,8 @@ import type { MindItem } from '../ui/types';
 import type { Region } from '../core/types';
 import { StarNode } from './components/StarNode';
 import { DeepStarfield } from './components/DeepStarfield';
-import { GalaxyDust } from './components/GalaxyDust';
 import { BlackHole } from './components/BlackHole';
-import { GALAXY_SHAPE, galaxyArmAngle, galaxyArmRadius } from './layout';
+import { MilkyWay, milkyWayArmPoint } from './components/MilkyWay';
 
 interface Cluster {
   name: string;
@@ -32,10 +31,6 @@ function hashValue(value: string): number {
     h = Math.imul(h, 16777619);
   }
   return h >>> 0;
-}
-
-function unit(value: string): number {
-  return (hashValue(value) % 1000) / 1000;
 }
 
 function mulberry32(seed: number): () => number {
@@ -145,7 +140,8 @@ const PULSE_VERTEX = /* glsl */ `
   void main() {
     vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
     gl_Position = projectionMatrix * viewPosition;
-    gl_PointSize = clamp(aSize * uDpr * (80.0 / max(8.0, -viewPosition.z)), 1.0, 20.0);
+    // Fixed world size: only brightness animates, so the glow never "pops".
+    gl_PointSize = clamp(aSize * uDpr * (90.0 / max(6.0, -viewPosition.z)), 0.0, 48.0);
     vColor = aColor;
     vAlpha = aAlpha;
   }
@@ -155,11 +151,15 @@ const PULSE_FRAGMENT = /* glsl */ `
   varying vec3 vColor;
   varying float vAlpha;
   void main() {
-    vec2 coord = gl_PointCoord - 0.5;
-    float d = length(coord);
-    if (d > 0.5) discard;
-    float core = smoothstep(0.5, 0.0, d);
-    gl_FragColor = vec4(vColor * (0.9 + core * 0.8), core * vAlpha);
+    if (vAlpha <= 0.001) discard;
+    float d = length(gl_PointCoord - 0.5) * 2.0;
+    if (d > 1.0) discard;
+    // Gaussian falloff: a soft bloom with a hot core, no hard sprite edge.
+    float halo = exp(-d * d * 5.0) - exp(-5.0);
+    float core = exp(-d * d * 38.0);
+    float alpha = (halo * 0.5 + core) * vAlpha;
+    vec3 color = mix(vColor, vec3(1.0), core * 0.7);
+    gl_FragColor = vec4(color, alpha);
   }
 `;
 
@@ -603,6 +603,46 @@ function AmbientStar({ spec }: { spec: AmbientStarSpec }) {
   );
 }
 
+/** Samples per curved filament. */
+const CURVE_SEGMENTS = 40;
+/** How far past the target the head travels so its tail drains in smoothly. */
+const PULSE_OVERSHOOT = 0.3;
+/** Dim resting brightness of a filament (additive). */
+const FILAMENT_BASE = 0.13;
+
+interface CurveDef {
+  /** Sideways bow, as a fraction of chord length (signed). */
+  bend: number;
+  /** Vertical arc, as a fraction of chord length (signed). */
+  lift: number;
+}
+
+interface PulseDef {
+  edgeIndex: number;
+  speed: number;
+  offset: number;
+  cycle: number;
+  strength: number;
+  size: number;
+}
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+/** Brightness contribution of a pulse head at `head` to a point at `s` (both 0-1 along the curve). */
+function pulseShape(s: number, head: number): number {
+  const d = s - head;
+  if (d > 0) {
+    // Leading edge: tight gaussian.
+    const x = d / 0.022;
+    return Math.exp(-x * x);
+  }
+  // Trailing light: long exponential tail like a comet.
+  return Math.exp(d / 0.085);
+}
+
 function DynamicEdges({
   edges,
   nodeRefs,
@@ -610,8 +650,10 @@ function DynamicEdges({
   edges: GraphEdge[];
   nodeRefs: { current: Map<string, THREE.Object3D> };
 }) {
-  const lineGeometry = useMemo(() => new THREE.BufferGeometry(), []);
-  const pulseGeometry = useMemo(() => new THREE.BufferGeometry(), []);
+  const timeRef = useRef(0);
+
+  const skeletonRef = useRef<THREE.Vector3[]>([new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]);
+
   const pulseMaterial = useMemo(
     () =>
       new THREE.ShaderMaterial({
@@ -624,137 +666,246 @@ function DynamicEdges({
       }),
     [],
   );
-  const timeRef = useRef(0);
+  useEffect(() => () => pulseMaterial.dispose(), [pulseMaterial]);
 
-  const pulseDefs = useMemo(() => {
-    const defs: {
-      edgeIndex: number;
-      offset: number;
-      speed: number;
-      sizeType: number;
-      strength: number;
-    }[] = [];
-    edges.forEach((edge, ei) => {
-      const perEdge = 3 + (hashValue(edge.fromId + edge.toId) % 3);
-      for (let p = 0; p < perEdge; p += 1) {
-        const key = `${edge.fromId}:${edge.toId}:${p}`;
+  const curves = useMemo<CurveDef[]>(
+    () =>
+      edges.map((edge) => {
+        const random = mulberry32(hashValue(`${edge.fromId}->${edge.toId}:curve`));
+        const side = random() > 0.5 ? 1 : -1;
+        return {
+          bend: side * (0.18 + random() * 0.26),
+          lift: (random() - 0.35) * 0.4,
+        };
+      }),
+    [edges],
+  );
+
+  const pulseDefs = useMemo<PulseDef[]>(() => {
+    const defs: PulseDef[] = [];
+    edges.forEach((edge, edgeIndex) => {
+      const random = mulberry32(hashValue(`${edge.fromId}->${edge.toId}:pulse`));
+      const count = random() < 0.35 ? 2 : 1;
+      for (let index = 0; index < count; index += 1) {
+        // Each cycle = travel (1 + overshoot) plus a resting gap with no light.
+        const cycle = 1 + PULSE_OVERSHOOT + 0.4 + random() * 1.6;
         defs.push({
-          edgeIndex: ei,
-          offset: (p + 0.12 + unit(`${key}:offset`) * 0.72) / perEdge,
-          speed: 0.04 + unit(`${key}:speed`) * 0.22,
-          sizeType: unit(`${key}:size`),
-          strength: 0.35 + unit(`${key}:strength`) * 0.65,
+          edgeIndex,
+          speed: 0.09 + random() * 0.07,
+          offset: (index / count) * cycle + random() * 0.5,
+          cycle,
+          strength: 0.65 + random() * 0.35,
+          size: 1.6 + random() * 0.9,
         });
       }
     });
     return defs;
   }, [edges]);
 
-  const linePositions = useMemo(
-    () => new Float32Array(Math.max(1, edges.length) * 6),
+  const pulsesByEdge = useMemo(() => {
+    const map: number[][] = edges.map(() => []);
+    pulseDefs.forEach((pulse, index) => map[pulse.edgeIndex].push(index));
+    return map;
+  }, [edges, pulseDefs]);
+
+  const baseColors = useMemo(
+    () => edges.map((edge) => new THREE.Color(edge.color || '#94a3b8')),
     [edges],
   );
-  const lineColors = useMemo(() => {
-    const arr = new Float32Array(Math.max(1, edges.length) * 6);
-    edges.forEach((edge, ei) => {
-      const c = new THREE.Color(edge.color);
-      arr[ei * 6] = c.r;
-      arr[ei * 6 + 1] = c.g;
-      arr[ei * 6 + 2] = c.b;
-      arr[ei * 6 + 3] = c.r;
-      arr[ei * 6 + 4] = c.g;
-      arr[ei * 6 + 5] = c.b;
-    });
-    return arr;
+
+  const lineGeometry = useMemo(() => {
+    const vertexCount = Math.max(1, edges.length) * CURVE_SEGMENTS * 2;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      'position',
+      new THREE.BufferAttribute(new Float32Array(vertexCount * 3), 3).setUsage(THREE.DynamicDrawUsage),
+    );
+    geometry.setAttribute(
+      'color',
+      new THREE.BufferAttribute(new Float32Array(vertexCount * 3), 3).setUsage(THREE.DynamicDrawUsage),
+    );
+    return geometry;
   }, [edges]);
+  useEffect(() => () => lineGeometry.dispose(), [lineGeometry]);
 
-  const pulsePositions = useMemo(
-    () => new Float32Array(Math.max(1, pulseDefs.length) * 3),
-    [pulseDefs],
-  );
-  const pulseColors = useMemo(() => {
-    const arr = new Float32Array(Math.max(1, pulseDefs.length) * 3);
-    pulseDefs.forEach((p, pi) => {
-      const edge = edges[p.edgeIndex];
-      const c = new THREE.Color(edge?.color || '#94a3b8');
-      const boost = p.sizeType > 0.85 ? 0.6 : 0;
-      arr[pi * 3] = Math.min(1, c.r + boost);
-      arr[pi * 3 + 1] = Math.min(1, c.g + boost);
-      arr[pi * 3 + 2] = Math.min(1, c.b + boost);
+  const pulseGeometry = useMemo(() => {
+    const count = Math.max(1, pulseDefs.length);
+    const colors = new Float32Array(count * 3);
+    const sizes = new Float32Array(count);
+    pulseDefs.forEach((pulse, index) => {
+      const color = baseColors[pulse.edgeIndex].clone().lerp(new THREE.Color('#ffffff'), 0.35);
+      colors.set([color.r, color.g, color.b], index * 3);
+      sizes[index] = pulse.size;
     });
-    return arr;
-  }, [edges, pulseDefs]);
-  const pulseSizes = useMemo(
-    () => new Float32Array(Math.max(1, pulseDefs.length)),
-    [pulseDefs],
-  );
-  const pulseAlphas = useMemo(
-    () => new Float32Array(Math.max(1, pulseDefs.length)),
-    [pulseDefs],
-  );
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      'position',
+      new THREE.BufferAttribute(new Float32Array(count * 3), 3).setUsage(THREE.DynamicDrawUsage),
+    );
+    geometry.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
+    geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
+    geometry.setAttribute(
+      'aAlpha',
+      new THREE.BufferAttribute(new Float32Array(count), 1).setUsage(THREE.DynamicDrawUsage),
+    );
+    return geometry;
+  }, [pulseDefs, baseColors]);
+  useEffect(() => () => pulseGeometry.dispose(), [pulseGeometry]);
 
-  useEffect(() => {
-    lineGeometry.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
-    lineGeometry.setAttribute('color', new THREE.BufferAttribute(lineColors, 3));
-    pulseGeometry.setAttribute('position', new THREE.BufferAttribute(pulsePositions, 3));
-    pulseGeometry.setAttribute('aColor', new THREE.BufferAttribute(pulseColors, 3));
-    pulseGeometry.setAttribute('aSize', new THREE.BufferAttribute(pulseSizes, 1));
-    pulseGeometry.setAttribute('aAlpha', new THREE.BufferAttribute(pulseAlphas, 1));
-    return () => {
-      lineGeometry.dispose();
-      pulseGeometry.dispose();
-      pulseMaterial.dispose();
-    };
-  }, [lineGeometry, pulseGeometry, pulseMaterial, linePositions, lineColors, pulsePositions, pulseColors, pulseSizes, pulseAlphas]);
+  // Scratch buffers reused every frame.
+  const scratch = useMemo(
+    () => ({
+      points: new Float32Array((CURVE_SEGMENTS + 1) * 3),
+      glow: new Float32Array(CURVE_SEGMENTS + 1),
+      heads: new Float32Array(Math.max(1, pulseDefs.length)),
+      envelopes: new Float32Array(Math.max(1, pulseDefs.length)),
+      chord: new THREE.Vector3(),
+      side: new THREE.Vector3(),
+      up: new THREE.Vector3(0, 1, 0),
+      control: new THREE.Vector3(),
+      white: new THREE.Color('#ffffff'),
+    }),
+    [pulseDefs.length],
+  );
 
   useFrame((state, delta) => {
-    timeRef.current += delta;
-    const linePos = lineGeometry.getAttribute('position') as THREE.BufferAttribute | undefined;
-    if (linePos) {
-      edges.forEach((edge, ei) => {
+    // Clamp delta so a backgrounded tab doesn't make every pulse leap.
+    timeRef.current += Math.min(delta, 1 / 20);
+    const time = timeRef.current;
+
+    // Advance every pulse head: 0 = leaving the source, 1 = arriving.
+    pulseDefs.forEach((pulse, index) => {
+      const phase = (time * pulse.speed + pulse.offset) % pulse.cycle;
+      scratch.heads[index] = phase;
+      const travelling = phase <= 1 + PULSE_OVERSHOOT;
+      scratch.envelopes[index] = travelling
+        ? smoothstep(0, 0.08, phase) * (1 - smoothstep(1, 1 + PULSE_OVERSHOOT, phase)) * pulse.strength
+        : 0;
+    });
+
+    // Keep the shader's animated skeleton in sync with the current node
+    // positions, so the travelling packets don't freeze at their camera-
+    // relative birth location when the camera zooms out.
+    const skeleton = pulseGeometry.getAttribute('aSkeleton');
+    if (skeleton) {
+      const skel = skeleton.array as Float32Array;
+      let cursor = 0;
+      edges.forEach((edge) => {
         const from = nodeRefs.current.get(edge.fromId)?.position;
         const to = nodeRefs.current.get(edge.toId)?.position;
         if (!from || !to) {
-          linePos.setXYZ(ei * 2, 0, 0, 0);
-          linePos.setXYZ(ei * 2 + 1, 0, 0, 0);
+          cursor += 3;
+          cursor += 3;
+          cursor += 3;
           return;
         }
-        linePos.setXYZ(ei * 2, from.x, from.y, from.z);
-        linePos.setXYZ(ei * 2 + 1, to.x, to.y, to.z);
+        skeletonRef.current[0].set(from.x, from.y, from.z);
+        skeletonRef.current[1].set(to.x, to.y, to.z);
+        skel[cursor * 3] = skeletonRef.current[0].x;
+        skel[cursor * 3 + 1] = skeletonRef.current[0].y;
+        skel[cursor * 3 + 2] = skeletonRef.current[0].z;
+        cursor += 1;
+        skel[cursor * 3] = edge.control.x;
+        skel[cursor * 3 + 1] = edge.control.y;
+        skel[cursor * 3 + 2] = edge.control.z;
+        cursor += 1;
+        skel[cursor * 3] = skeletonRef.current[1].x;
+        skel[cursor * 3 + 1] = skeletonRef.current[1].y;
+        skel[cursor * 3 + 2] = skeletonRef.current[1].z;
+        cursor += 1;
       });
-      linePos.needsUpdate = true;
+      skeleton.needsUpdate = true;
     }
 
-    const pulsePos = pulseGeometry.getAttribute('position') as THREE.BufferAttribute | undefined;
-    const pulseSizeAttr = pulseGeometry.getAttribute('aSize') as THREE.BufferAttribute | undefined;
-    const pulseAlphaAttr = pulseGeometry.getAttribute('aAlpha') as THREE.BufferAttribute | undefined;
-    if (pulsePos && pulseSizeAttr && pulseAlphaAttr) {
-      pulseDefs.forEach((p, pi) => {
-        const edge = edges[p.edgeIndex];
-        const from = edge ? nodeRefs.current.get(edge.fromId)?.position : null;
-        const to = edge ? nodeRefs.current.get(edge.toId)?.position : null;
-        if (!from || !to || !edge) {
-          pulsePos.setXYZ(pi, 0, 0, 0);
-          pulseSizeAttr.setX(pi, 0);
-          pulseAlphaAttr.setX(pi, 0);
-          return;
+    const positions = lineGeometry.getAttribute('position') as THREE.BufferAttribute;
+    const colors = lineGeometry.getAttribute('color') as THREE.BufferAttribute;
+    const pulsePositions = pulseGeometry.getAttribute('position') as THREE.BufferAttribute;
+    const pulseAlphas = pulseGeometry.getAttribute('aAlpha') as THREE.BufferAttribute;
+    const posArray = positions.array as Float32Array;
+    const colArray = colors.array as Float32Array;
+    const { points, glow, chord, side, up, control } = scratch;
+
+    edges.forEach((edge, edgeIndex) => {
+      const from = nodeRefs.current.get(edge.fromId)?.position;
+      const to = nodeRefs.current.get(edge.toId)?.position;
+      const vertexBase = edgeIndex * CURVE_SEGMENTS * 2;
+
+      if (!from || !to) {
+        colArray.fill(0, vertexBase * 3, (vertexBase + CURVE_SEGMENTS * 2) * 3);
+        for (const pulseIndex of pulsesByEdge[edgeIndex]) pulseAlphas.setX(pulseIndex, 0);
+        return;
+      }
+
+      // Quadratic Bezier: bow sideways and arc up/down, scaled by chord length,
+      // so filaments sweep through space instead of cutting straight across.
+      chord.subVectors(to, from);
+      const length = chord.length() || 1;
+      side.crossVectors(chord, up);
+      if (side.lengthSq() < 1e-6) side.set(1, 0, 0);
+      side.normalize();
+      const curve = curves[edgeIndex];
+      control
+        .addVectors(from, to)
+        .multiplyScalar(0.5)
+        .addScaledVector(side, curve.bend * length)
+        .addScaledVector(up, curve.lift * length);
+
+      for (let k = 0; k <= CURVE_SEGMENTS; k += 1) {
+        const s = k / CURVE_SEGMENTS;
+        const a = (1 - s) * (1 - s);
+        const b = 2 * (1 - s) * s;
+        const c = s * s;
+        points[k * 3] = a * from.x + b * control.x + c * to.x;
+        points[k * 3 + 1] = a * from.y + b * control.y + c * to.y;
+        points[k * 3 + 2] = a * from.z + b * control.z + c * to.z;
+
+        let light = 0;
+        for (const pulseIndex of pulsesByEdge[edgeIndex]) {
+          const envelope = scratch.envelopes[pulseIndex];
+          if (envelope > 0) light += pulseShape(s, scratch.heads[pulseIndex]) * envelope;
         }
-        const progress = (timeRef.current * p.speed + p.offset) % 1;
-        const x = from.x + (to.x - from.x) * progress;
-        const y = from.y + (to.y - from.y) * progress;
-        const z = from.z + (to.z - from.z) * progress;
-        pulsePos.setXYZ(pi, x, y, z);
-        const fade = Math.sin(progress * Math.PI);
-        const big = p.sizeType > 0.85;
-        const baseSize = big ? 8 : p.sizeType > 0.5 ? 4.5 : 2.2;
-        pulseSizeAttr.setX(pi, baseSize * (0.45 + 0.55 * fade));
-        pulseAlphaAttr.setX(pi, (0.25 + 0.75 * fade) * p.strength * (big ? 1.35 : 1));
-      });
-      pulsePos.needsUpdate = true;
-      pulseSizeAttr.needsUpdate = true;
-      pulseAlphaAttr.needsUpdate = true;
-    }
+        glow[k] = Math.min(light, 1.6);
+      }
 
+      // Light runs through the filament itself: base tint + a white-hot travelling band.
+      const base = baseColors[edgeIndex];
+      for (let k = 0; k < CURVE_SEGMENTS; k += 1) {
+        for (let end = 0; end < 2; end += 1) {
+          const sample = k + end;
+          const vertex = (vertexBase + k * 2 + end) * 3;
+          posArray[vertex] = points[sample * 3];
+          posArray[vertex + 1] = points[sample * 3 + 1];
+          posArray[vertex + 2] = points[sample * 3 + 2];
+          const g = glow[sample];
+          colArray[vertex] = base.r * (FILAMENT_BASE + g * 0.9) + g * 0.35;
+          colArray[vertex + 1] = base.g * (FILAMENT_BASE + g * 0.9) + g * 0.35;
+          colArray[vertex + 2] = base.b * (FILAMENT_BASE + g * 0.9) + g * 0.35;
+        }
+      }
+
+      // Soft bloom riding on each pulse head.
+      for (const pulseIndex of pulsesByEdge[edgeIndex]) {
+        const head = scratch.heads[pulseIndex];
+        const s = Math.min(1, head);
+        const a = (1 - s) * (1 - s);
+        const b = 2 * (1 - s) * s;
+        const c = s * s;
+        pulsePositions.setXYZ(
+          pulseIndex,
+          a * from.x + b * control.x + c * to.x,
+          a * from.y + b * control.y + c * to.y,
+          a * from.z + b * control.z + c * to.z,
+        );
+        const headEnvelope =
+          head <= 1 ? smoothstep(0, 0.08, head) * (1 - smoothstep(0.86, 1, head)) : 0;
+        pulseAlphas.setX(pulseIndex, headEnvelope * pulseDefs[pulseIndex].strength * 0.85);
+      }
+    });
+
+    positions.needsUpdate = true;
+    colors.needsUpdate = true;
+    pulsePositions.needsUpdate = true;
+    pulseAlphas.needsUpdate = true;
     pulseMaterial.uniforms.uDpr.value = state.viewport.dpr;
   });
 
@@ -766,7 +917,6 @@ function DynamicEdges({
         <lineBasicMaterial
           vertexColors
           transparent
-          opacity={0.14}
           depthWrite={false}
           blending={THREE.AdditiveBlending}
           toneMapped={false}
@@ -807,13 +957,14 @@ export function TopicGraph({
       map.get(name)!.items.push(item);
     }
     const list = [...map.values()];
-    const radius = Math.max(40, list.length * 14);
+    // Each topic's solar system sits on a spiral arm, spread out along the
+    // arms (golden-ratio stepping) so zooming to one is a real journey.
     return list.map((cluster, index) => {
-      const angle = (index / Math.max(1, list.length)) * Math.PI * 2;
-      return {
-        ...cluster,
-        center: [Math.cos(angle) * radius, 0, Math.sin(angle) * radius] as [number, number, number],
-      };
+      const random = mulberry32(hashValue(`cluster:${cluster.name}`));
+      const arm = index % 4;
+      const t = 0.16 + ((index * 0.618034 + 0.21) % 1) * 0.34;
+      const center = milkyWayArmPoint(t, arm, (random() - 0.5) * 6);
+      return { ...cluster, center };
     });
   }, [items]);
 
@@ -823,21 +974,46 @@ export function TopicGraph({
     const seen = new Set<string>();
     const out: GraphEdge[] = [];
     const add = (fromId: string, toId: string, color: string) => {
+      if (fromId === toId) return;
       const key = fromId < toId ? `${fromId}|${toId}` : `${toId}|${fromId}`;
       if (seen.has(key)) return;
       seen.add(key);
       out.push({ fromId, toId, color });
     };
+
+    // Real AI-detected relations first.
     for (const item of items) {
       for (const relatedId of item.relatedIds ?? []) {
         if (itemById.has(relatedId)) {
           add(item.id, relatedId, item.topicColor || '#94a3b8');
         }
       }
-      if (item.entryType === 'attachment' && item.parentId && itemById.has(item.parentId)) {
-        add(item.id, item.parentId, item.topicColor || '#94a3b8');
+    }
+
+    // Then wandering filaments: each planet reaches out to one or two random
+    // places elsewhere in the galaxy (other planets, or other topics' stars),
+    // never back to its own star. Seeded by id so they're stable across renders.
+    const topicIds = [...new Set(items.map((item) => `topic:${item.topic || 'Untagged'}`))];
+    for (const item of items) {
+      const ownTopic = `topic:${item.topic || 'Untagged'}`;
+      const random = mulberry32(hashValue(`${item.id}:filaments`));
+      const otherPlanets = items.filter((other) => other.id !== item.id).map((other) => other.id);
+      const foreignPlanets = items
+        .filter((other) => (other.topic || 'Untagged') !== (item.topic || 'Untagged'))
+        .map((other) => other.id);
+      const foreignStars = topicIds.filter((id) => id !== ownTopic);
+      const reach = random() < 0.4 ? 2 : 1;
+      for (let n = 0; n < reach; n += 1) {
+        const roll = random();
+        const pool =
+          roll < 0.25 && foreignStars.length > 0
+            ? foreignStars
+            : roll < 0.65 && foreignPlanets.length > 0
+              ? foreignPlanets
+              : otherPlanets;
+        if (pool.length === 0) continue;
+        add(item.id, pool[Math.floor(random() * pool.length)], item.topicColor || '#94a3b8');
       }
-      add(item.id, `topic:${item.topic || 'Untagged'}`, item.topicColor || '#94a3b8');
     }
     return out.slice(0, 90);
   }, [items, itemById]);
@@ -845,16 +1021,16 @@ export function TopicGraph({
   const ambientStars = useMemo<AmbientStarSpec[]>(() => {
     const random = mulberry32(909091);
     const palette = ['#dce8f4', '#f6e8cd', '#c7d8ec', '#f8fbff'];
-    const count = 18;
+    const count = 40;
     const stars: AmbientStarSpec[] = [];
     for (let i = 0; i < count; i += 1) {
-      const arm = Math.floor(random() * GALAXY_SHAPE.arms);
-      const t = Math.min(1, Math.pow(random(), 0.75));
-      const angle = galaxyArmAngle(t, arm) + (random() - 0.5) * 0.4;
-      const radius = galaxyArmRadius(t) + (random() - 0.5) * 3.0;
-      const x = Math.cos(angle) * radius;
-      const z = Math.sin(angle) * radius;
-      const y = (random() - 0.5) * GALAXY_SHAPE.thickness * (1 - 0.3 * t);
+      // Uncharted solar systems scattered along the arms, to discover up close.
+      const arm = Math.floor(random() * 4);
+      const t = 0.08 + random() * 0.6;
+      const [ax, , az] = milkyWayArmPoint(t, arm);
+      const x = ax + (random() - 0.5) * 40;
+      const z = az + (random() - 0.5) * 40;
+      const y = (random() - 0.5) * 8;
       const color = palette[Math.floor(random() * palette.length)];
       const planetCount = 1 + Math.floor(random() * 4);
       const planets: AmbientPlanetSpec[] = Array.from({ length: planetCount }, (_, pi) => {
@@ -879,10 +1055,12 @@ export function TopicGraph({
 
   const view = useMemo(
     () => ({
-      home: [0, 42, 86] as [number, number, number],
+      // Far enough out that the whole galaxy reads as one shape.
+      home: [0, 1250, 1450] as [number, number, number],
       target: [0, 0, 0] as [number, number, number],
-      focusDistance: 10,
-      maxDistance: 320,
+      focusDistance: 3.2,
+      minDistance: 0.8,
+      maxDistance: 3600,
     }),
     [],
   );
@@ -894,31 +1072,32 @@ export function TopicGraph({
       setFocus({ position: null, token: Date.now() });
       return;
     }
-    const refPos = nodeRefs.current.get(selectedId)?.position;
-    if (refPos) {
-      setFocus({ position: [refPos.x, refPos.y, refPos.z], token: Date.now() });
+    const node = nodeRefs.current.get(selectedId);
+    if (node) {
+      // Follow the live planet: it keeps orbiting while we fly in.
+      setFocus({ position: null, follow: node, token: Date.now() });
       return;
     }
     const item = itemById.get(selectedId);
     const cluster = clusters.find((entry) => entry.name === (item?.topic || 'Untagged'));
     if (cluster) {
-      setFocus({ position: cluster.center, token: Date.now() });
+      setFocus({ position: cluster.center, distance: 24, token: Date.now() });
     }
   }, [selectedId, clusters, itemById]);
 
   return (
     <Canvas
-      camera={{ position: [0, 24, 36], fov: 52 }}
+      camera={{ position: [0, 1250, 1450], fov: 52, near: 0.05, far: 40000 }}
       style={{ position: 'absolute', inset: 0, background: '#000000' }}
       gl={{ antialias: true, alpha: false }}
     >
       <color attach="background" args={['#000000']} />
-      <fog attach="fog" args={['#000000', 60, 180]} />
-      <CameraController focus={focus} view={view} />
-      <DeepStarfield count={3200} />
-      <GalaxyDust count={1400} spin={0.012} seed={20261123} />
-      <GalaxyDust count={900} spin={0.008} seed={917351} />
-      <group scale={1.0}>
+      <CameraController focus={focus} view={view} warp />
+      {/* Distant background stars far beyond the galaxy. */}
+      <DeepStarfield count={6000} innerRadius={14000} depth={6000} />
+      <MilkyWay />
+      {/* Scaled up so it still reads as the galaxy's heart from far away. */}
+      <group scale={4}>
         <BlackHole />
       </group>
       {clusters.map((cluster) => (

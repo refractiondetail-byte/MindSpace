@@ -92,7 +92,7 @@ export function GalaxyWorld({
         activeIds={activeIds}
         selectedId={selectedId}
         color="#8fa6bd"
-        opacity={0.1}
+        opacity={0.22}
         additive
         pulse={PROBE_PULSES}
       />

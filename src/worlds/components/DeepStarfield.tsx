@@ -62,7 +62,16 @@ function mulberry32(seed: number): () => number {
 }
 
 /** Sparse, color-varied deep-space stars on a distant shell. */
-export function DeepStarfield({ count = 5200 }: { count?: number }) {
+export function DeepStarfield({
+  count = 5200,
+  innerRadius = 110,
+  depth = 105,
+}: {
+  count?: number;
+  /** Distance of the star shell from the origin. */
+  innerRadius?: number;
+  depth?: number;
+}) {
   const dpr = useThree((state) => state.viewport.dpr);
   const timeRef = useRef(0);
 
@@ -78,7 +87,7 @@ export function DeepStarfield({ count = 5200 }: { count?: number }) {
     for (let index = 0; index < count; index += 1) {
       const azimuth = random() * Math.PI * 2;
       const elevation = Math.acos(2 * random() - 1);
-      const radius = 110 + random() * 105;
+      const radius = innerRadius + random() * depth;
       positions[index * 3] = Math.sin(elevation) * Math.cos(azimuth) * radius;
       positions[index * 3 + 1] = Math.cos(elevation) * radius;
       positions[index * 3 + 2] = Math.sin(elevation) * Math.sin(azimuth) * radius;
@@ -101,7 +110,7 @@ export function DeepStarfield({ count = 5200 }: { count?: number }) {
     buffer.setAttribute('aAlpha', new THREE.BufferAttribute(alphas, 1));
     buffer.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
     return buffer;
-  }, [count]);
+  }, [count, innerRadius, depth]);
 
   const material = useMemo(
     () =>

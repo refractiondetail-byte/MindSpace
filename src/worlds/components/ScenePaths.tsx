@@ -28,7 +28,7 @@ interface ScenePathsProps {
   pulse?: PulseConfig | null;
 }
 
-const SEGMENTS = 20;
+const SEGMENTS = 32;
 const WHITE = new THREE.Color('#ffffff');
 const NO_RAYCAST = () => null;
 
@@ -202,10 +202,36 @@ export function ScenePaths({
     return geometry;
   }, [visible, selectedId, color]);
 
-  const pulseGeometry = useMemo(() => {
-    if (!pulse || visible.length === 0) return null;
+  const pulseMaterial = useMemo(() => {
+    if (!pulse) return null;
+    return new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uSize: { value: pulse.size },
+        uSpeed: { value: pulse.speed },
+        uOpacity: { value: pulse.opacity },
+        uDpr: { value: dpr },
+        uVariability: { value: pulse.variability ?? 0.7 },
+        uBurst: { value: pulse.burst ? 1 : 0 },
+        uBurstRate: { value: pulse.burst?.rate ?? 0.12 },
+        uBurstWindow: { value: pulse.burst?.window ?? 0.1 },
+      },
+      vertexShader: PULSE_VERTEX,
+      fragmentShader: PULSE_FRAGMENT,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+  }, [pulse, dpr]);
 
-    const perEdge = Math.max(1, Math.round(pulse.perEdge));
+  const perEdge = useMemo(
+    () => Math.max(1, Math.round(pulse?.perEdge ?? 0)),
+    [pulse],
+  );
+
+  const pulseGeometry = useMemo(() => {
+    if (!pulse || perEdge === 0 || visible.length === 0) return null;
+
     const total = visible.length * perEdge;
     const positions = new Float32Array(total * 3);
     const starts = new Float32Array(total * 3);
@@ -232,11 +258,14 @@ export function ScenePaths({
 
       for (let packet = 0; packet < perEdge; packet += 1) {
         const key = `${edge.fromId}:${edge.toId}:${packet}`;
+        // Base trigger clock: encodes when, in pulse-space, this packet is
+        // born relative to all others on the same edge. Only this depends on
+        // `perEdge`, so the curve geometry can be reused across zoom levels.
+        const trigger = (packet + 0.15 + unit(`${key}:offset`) * 0.7) / perEdge;
         starts.set(edge.from, cursor * 3);
         controls.set(edge.control, cursor * 3);
         ends.set(edge.to, cursor * 3);
-        offsets[cursor] =
-          (packet + 0.15 + unit(`${key}:offset`) * 0.7) / perEdge;
+        offsets[cursor] = trigger;
         strengths[cursor] = strength;
         variations[cursor] = unit(`${key}:variation`);
         colors.set([tint.r, tint.g, tint.b], cursor * 3);
@@ -244,20 +273,33 @@ export function ScenePaths({
       }
     }
 
+    // Geometric skeleton shared by every packet on the edge (control points).
+    // Kept separately so we can recompute it when an edge endpoint animates.
+    const skeleton = useMemo(
+      () =>
+        visible.map((edge) => ({
+          from: new THREE.Vector3(edge.from[0], edge.from[1], edge.from[2]),
+          control: new THREE.Vector3(edge.control[0], edge.control[1], edge.control[2]),
+          to: new THREE.Vector3(edge.to[0], edge.to[1], edge.to[2]),
+        })),
+      [visible],
+    );
+
     const geometry = new THREE.BufferGeometry();
+    // Placeholder positions; the shader recomputes the live point each frame
+    // using the animated skeleton, so a zoom doesn't leave packets stranded
+    // at their camera-relative birth positions.
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('aStart', new THREE.BufferAttribute(starts, 3));
     geometry.setAttribute('aControl', new THREE.BufferAttribute(controls, 3));
     geometry.setAttribute('aEnd', new THREE.BufferAttribute(ends, 3));
     geometry.setAttribute('aOffset', new THREE.BufferAttribute(offsets, 1));
     geometry.setAttribute('aStrength', new THREE.BufferAttribute(strengths, 1));
-    geometry.setAttribute(
-      'aVariation',
-      new THREE.BufferAttribute(variations, 1),
-    );
+    geometry.setAttribute('aVariation', new THREE.BufferAttribute(variations, 1));
     geometry.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
+    geometry.setAttribute('aSkeleton', new THREE.BufferAttribute(new Float32Array(visible.length * 9), 3).setUsage(THREE.DynamicDrawUsage));
     return geometry;
-  }, [visible, selectedId, activeIds, color, pulse]);
+  }, [visible, selectedId, activeIds, color, pulse, perEdge]);
 
   const pulseMaterial = useMemo(() => {
     if (!pulse) return null;
@@ -303,11 +345,40 @@ export function ScenePaths({
   );
 
   const timeRef = useRef(0);
+  const skeletonRef = useRef<THREE.Vector3[]>([new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]);
   useFrame((state, delta) => {
     timeRef.current += delta;
-    if (pulseMaterial) {
+    if (pulseMaterial && pulseGeometry) {
       pulseMaterial.uniforms.uTime.value = timeRef.current;
       pulseMaterial.uniforms.uDpr.value = state.viewport.dpr;
+
+      // Every frame, recompute each edge's animated control point from the
+      // camera-relative start/end, so the travelling packets ride along with
+      // the camera instead of being baked into camera space at birth.
+      const skeleton = pulseGeometry.getAttribute('aSkeleton');
+      if (skeleton) {
+        const skel = skeleton.array as Float32Array;
+        let cursor = 0;
+        for (let i = 0; i < visible.length; i += 1) {
+          const edge = visible[i];
+          const start = skeletonRef.current[0].set(edge.from[0], edge.from[1], edge.from[2]);
+          const end = skeletonRef.current[1].set(edge.to[0], edge.to[1], edge.to[2]);
+          const mid = skeletonRef.current[2].copy(start).lerp(end, 0.5);
+          skel[cursor * 3] = start.x;
+          skel[cursor * 3 + 1] = start.y;
+          skel[cursor * 3 + 2] = start.z;
+          cursor += 1;
+          skel[cursor * 3] = edge.control[0];
+          skel[cursor * 3 + 1] = edge.control[1];
+          skel[cursor * 3 + 2] = edge.control[2];
+          cursor += 1;
+          skel[cursor * 3] = end.x;
+          skel[cursor * 3 + 1] = end.y;
+          skel[cursor * 3 + 2] = end.z;
+          cursor += 1;
+        }
+        skeleton.needsUpdate = true;
+      }
     }
   });
 
