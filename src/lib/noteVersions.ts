@@ -70,12 +70,16 @@ export async function recordNoteVersion(item: MindItem): Promise<void> {
   if (!supabase) return;
   try {
     const userId = await getCurrentUserId();
-    await supabase.from('note_versions').insert({
+    // supabase-js resolves with `{ error }` instead of throwing, so the result
+    // must be inspected or failures stay invisible.
+    const { error } = await supabase.from('note_versions').insert({
+      id: version.id,
       node_id: item.id,
       user_id: userId,
-      version: version,
+      version,
       created_at: version.createdAt,
     });
+    if (error) console.warn('note_versions insert failed, kept local copy:', error);
   } catch (error) {
     console.warn('note_versions table unavailable, using local fallback:', error);
   }
@@ -88,8 +92,14 @@ export async function listNoteVersions(nodeId: string): Promise<NoteVersion[]> {
       let query = supabase.from('note_versions').select('version').eq('node_id', nodeId);
       if (userId) query = query.eq('user_id', userId);
       const { data, error } = await query.order('created_at', { ascending: false });
-      if (!error && data) {
-        return data.map((row) => row.version as NoteVersion);
+      if (error) {
+        // Surface PostgREST's code/hint: PGRST205 = table missing,
+        // 42703 = column missing, both fixed by supabase/rls.sql.
+        console.warn('note_versions read failed, using local fallback:', error);
+      } else if (data) {
+        return data
+          .map((row) => row.version as NoteVersion | null)
+          .filter((version): version is NoteVersion => Boolean(version));
       }
     } catch (error) {
       console.warn('note_versions unavailable, using local fallback:', error);

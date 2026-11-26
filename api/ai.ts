@@ -1,4 +1,12 @@
-import { handleAiRequest, readEnv } from '../src/server/aiCore';
+// NOTE: the `.js` extension is required, not cosmetic.
+// `package.json` sets `"type": "module"`, so `@vercel/node` runs this file as
+// native Node ESM and ships `api/` unbundled — Vite only bundles `src/`.
+// Node's ESM loader resolves relative specifiers literally, so an extensionless
+// `'../src/server/aiCore'` throws ERR_MODULE_NOT_FOUND at cold start, which
+// Vercel reports as 500 FUNCTION_INVOCATION_FAILED. Writing the post-compile
+// `.js` name is valid TypeScript (moduleResolution: bundler) and resolves to
+// `src/server/aiCore.ts` for the Vite/Cloudflare build.
+import { handleAiRequest, readEnv } from '../src/server/aiCore.js';
 
 /**
  * Vercel Function for `/api/ai` (Node.js runtime, fetch Web Standard export).
