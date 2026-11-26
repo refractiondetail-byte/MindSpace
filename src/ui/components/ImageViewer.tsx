@@ -80,6 +80,7 @@ export function ImageViewer({ url, name, onClose, onFocus }: ImageViewerProps) {
 
   function handleTitlePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (maximized) return;
+    event.preventDefault();
     bringToFront();
     setDragging(true);
     dragOffset.current = { x: event.clientX - pos.x, y: event.clientY - pos.y };
@@ -88,12 +89,17 @@ export function ImageViewer({ url, name, onClose, onFocus }: ImageViewerProps) {
 
   function handleTitlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
     if (!dragging || maximized) return;
-    setPos({ x: event.clientX - dragOffset.current.x, y: event.clientY - dragOffset.current.y });
+    setPos({
+      x: Math.max(8, Math.min(window.innerWidth - 80, event.clientX - dragOffset.current.x)),
+      y: Math.max(8, Math.min(window.innerHeight - 60, event.clientY - dragOffset.current.y)),
+    });
   }
 
   function handleTitlePointerUp(event: ReactPointerEvent<HTMLDivElement>) {
     setDragging(false);
-    (event.currentTarget as HTMLDivElement).releasePointerCapture(event.pointerId);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      (event.currentTarget as HTMLDivElement).releasePointerCapture(event.pointerId);
+    }
   }
 
   const pathFor = (stroke: Stroke) =>
@@ -114,12 +120,14 @@ export function ImageViewer({ url, name, onClose, onFocus }: ImageViewerProps) {
       onPointerDown={bringToFront}
     >
       <div
-        className="flex cursor-move items-center justify-between gap-2 border-b border-white/10 bg-white/[0.03] px-3 py-2"
+        className="flex cursor-move touch-none select-none items-center justify-between gap-2 border-b border-white/10 bg-white/[0.03] px-3 py-2"
+        style={{ touchAction: 'none' }}
         onPointerDown={handleTitlePointerDown}
         onPointerMove={handleTitlePointerMove}
         onPointerUp={handleTitlePointerUp}
+        onPointerCancel={handleTitlePointerUp}
       >
-        <div className="min-w-0">
+        <div className="pointer-events-none min-w-0">
           <p className="truncate text-xs font-semibold text-slate-200">{name}</p>
         </div>
         <div className="flex items-center gap-1" onPointerDown={(event) => event.stopPropagation()}>

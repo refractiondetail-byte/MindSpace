@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { listThoughts, createThought, addAttachment } from '../core/repository';
 import { db } from '../core/db';
@@ -31,25 +31,31 @@ export default function App() {
   const dragOffsetRef = useRef({ x: 0, y: 0 });
   const draggingRef = useRef(false);
 
-  useEffect(() => {
-    function onMove(event: MouseEvent) {
-      if (!draggingRef.current) return;
-      const width = window.innerWidth < 640 ? window.innerWidth - 16 : 420;
-      const height = 200;
-      const x = Math.max(8, Math.min(window.innerWidth - width - 8, event.clientX - dragOffsetRef.current.x));
-      const y = Math.max(8, Math.min(window.innerHeight - height - 8, event.clientY - dragOffsetRef.current.y));
-      setInspectorPos({ x, y });
-    }
-    function onUp() {
-      draggingRef.current = false;
-    }
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
+  function handleInspectorDragStart(event: ReactPointerEvent<HTMLDivElement>) {
+    if (inspectorMaximized) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    draggingRef.current = true;
+    dragOffsetRef.current = {
+      x: event.clientX - inspectorPos.x,
+      y: event.clientY - inspectorPos.y,
     };
-  }, []);
+  }
+
+  function handleInspectorDragMove(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!draggingRef.current) return;
+    const width = inspectorMinimized ? 260 : Math.min(420, window.innerWidth * 0.9);
+    const height = inspectorMinimized ? 44 : window.innerHeight * 0.7;
+    const x = Math.max(8, Math.min(window.innerWidth - width - 8, event.clientX - dragOffsetRef.current.x));
+    const y = Math.max(8, Math.min(window.innerHeight - height - 8, event.clientY - dragOffsetRef.current.y));
+    setInspectorPos({ x, y });
+  }
+
+  function handleInspectorDragEnd(event: ReactPointerEvent<HTMLDivElement>) {
+    draggingRef.current = false;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
   const [query, setQuery] = useState('');
   const [commandOpen, setCommandOpen] = useState(false);
   const [importFiles, setImportFiles] = useState<File[]>([]);
@@ -436,15 +442,18 @@ export default function App() {
           }
         >
           <div
-            className="flex cursor-move items-center justify-between border-b border-[#1f1f1f] bg-black/60 px-3 py-2"
-            onMouseDown={(event) => {
-              if (inspectorMaximized) return;
-              draggingRef.current = true;
-              dragOffsetRef.current = { x: event.clientX - inspectorPos.x, y: event.clientY - inspectorPos.y };
-            }}
+            className="flex cursor-move select-none items-center justify-between border-b border-[#1f1f1f] bg-black/60 px-3 py-2"
+            style={{ touchAction: 'none' }}
+            onPointerDown={handleInspectorDragStart}
+            onPointerMove={handleInspectorDragMove}
+            onPointerUp={handleInspectorDragEnd}
+            onPointerCancel={handleInspectorDragEnd}
           >
-            <span className="text-xs font-medium text-zinc-300">{selected.title}</span>
-            <div className="flex items-center gap-1">
+            <span className="pointer-events-none text-xs font-medium text-zinc-300">{selected.title}</span>
+            <div
+              className="flex items-center gap-1"
+              onPointerDown={(event) => event.stopPropagation()}
+            >
               <button type="button" onClick={() => setInspectorMinimized((v) => !v)} className="rounded px-2 text-xs text-zinc-400 hover:text-white">
                 {inspectorMinimized ? '□' : '_'}
               </button>
