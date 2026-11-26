@@ -27,6 +27,48 @@ interface SearchItem {
 
 const GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
 
+const GEMINI_KEY_NAME = 'GEMINI_API_KEY';
+
+/** Strip whitespace/quotes/`Bearer ` wrappers that sneak in when a key is pasted into a dashboard. */
+function normalizeSecret(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  let key = value.trim();
+  if (!key) return undefined;
+  if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) {
+    key = key.slice(1, -1).trim();
+  }
+  key = key.replace(/^bearer\s+/i, '').trim();
+  return key || undefined;
+}
+
+/**
+ * `process` only exists when the `nodejs_compat` flag is on, so reach it through
+ * globalThis instead of a bare reference that would throw in the Workers runtime.
+ */
+function readProcessEnv(name: string): string | undefined {
+  const proc = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process;
+  return proc?.env?.[name];
+}
+
+/**
+ * Resolve the Gemini key from the Cloudflare runtime `env` binding (a Worker secret
+ * or `.dev.vars` in dev), falling back to `process.env` for Node-based hosts.
+ */
+function resolveGeminiKey(env: Env | undefined): string | undefined {
+  const bindings = env as unknown as Record<string, unknown> | undefined;
+  return normalizeSecret(bindings?.[GEMINI_KEY_NAME]) ?? normalizeSecret(readProcessEnv(GEMINI_KEY_NAME));
+}
+
+function missingKeyError(env: Env | undefined): Error {
+  const bindingNames = Object.keys((env ?? {}) as Record<string, unknown>).sort();
+  const visible = bindingNames.length ? bindingNames.join(', ') : '(none)';
+  return new Error(
+    `GEMINI_API_KEY is not configured for this Worker request. Set it as a secret on the deployed Worker ` +
+      `(\`wrangler secret put GEMINI_API_KEY\`) or in .dev.vars for local dev. ` +
+      `Bindings visible to this request: ${visible}.`,
+  );
+}
+
 class GeminiError extends Error {
   status: number;
   rawBody: string;
@@ -38,9 +80,9 @@ class GeminiError extends Error {
   }
 }
 
-async function callGemini(env: Env, model: string, body: Record<string, unknown>): Promise<string> {
-  const key = env.GEMINI_API_KEY;
-  if (!key) throw new Error('GEMINI_API_KEY is not configured');
+async function callGemini(env: Env | undefined, model: string, body: Record<string, unknown>): Promise<string> {
+  const key = resolveGeminiKey(env);
+  if (!key) throw missingKeyError(env);
 
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`,
@@ -68,9 +110,13 @@ async function callGemini(env: Env, model: string, body: Record<string, unknown>
 }
 
 async function generateWithFallback(
-  env: Env,
+  env: Env | undefined,
   buildBody: (model: string) => Record<string, unknown>,
 ): Promise<string> {
+  // Fail fast when the key is missing: retrying every model with the same absent
+  // binding only buries the real cause under the last model's error.
+  if (!resolveGeminiKey(env)) throw missingKeyError(env);
+
   let lastError: unknown;
   for (const model of GEMINI_MODELS) {
     try {
