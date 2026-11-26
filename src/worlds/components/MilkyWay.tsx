@@ -109,7 +109,7 @@ const BULGE_COLORS = ['#ffd9a3', '#ffe6c4', '#ffc98c', '#fff1dc'];
 const ARM_COLORS = ['#cfe0ff', '#b4caff', '#ffffff', '#fff3df', '#dfe9ff', '#a8bfff'];
 const DISK_COLORS = ['#fff4e0', '#ffe2b8', '#f3f6ff', '#ffd7a6'];
 
-function buildStars(count: number) {
+export function buildMilkyWayStars(count: number): THREE.BufferGeometry {
   const random = mulberry32(1337421);
   const positions = new Float32Array(count * 3);
   const colors = new Float32Array(count * 3);
@@ -411,10 +411,16 @@ const BULGE_FRAGMENT = /* glsl */ `
 
 interface MilkyWayProps {
   starCount?: number;
+  /** Prebuilt star points, shared with the warp-trail effect so trails start on real stars. */
+  stars?: THREE.BufferGeometry;
 }
 
-export function MilkyWay({ starCount = 200000 }: MilkyWayProps) {
-  const stars = useMemo(() => buildStars(starCount), [starCount]);
+export function MilkyWay({ starCount = 200000, stars }: MilkyWayProps) {
+  const fallbackStars = useMemo(
+    () => (stars ? null : buildMilkyWayStars(starCount)),
+    [stars, starCount],
+  );
+  const starGeometry = stars ?? (fallbackStars as THREE.BufferGeometry);
   const nebulae = useMemo(() => buildNebulae(2400), []);
   const dust = useMemo(() => buildDust(2800), []);
 
@@ -495,7 +501,7 @@ export function MilkyWay({ starCount = 200000 }: MilkyWayProps) {
 
   useEffect(
     () => () => {
-      stars.dispose();
+      starGeometry.dispose();
       nebulae.dispose();
       dust.dispose();
       starMaterial.dispose();
@@ -504,7 +510,7 @@ export function MilkyWay({ starCount = 200000 }: MilkyWayProps) {
       diskGlowMaterial.dispose();
       bulgeMaterial.dispose();
     },
-    [stars, nebulae, dust, starMaterial, nebulaMaterial, dustMaterial, diskGlowMaterial, bulgeMaterial],
+    [starGeometry, nebulae, dust, starMaterial, nebulaMaterial, dustMaterial, diskGlowMaterial, bulgeMaterial],
   );
 
   useFrame((state) => {
@@ -529,7 +535,7 @@ export function MilkyWay({ starCount = 200000 }: MilkyWayProps) {
           <planeGeometry args={[520, 520]} />
         </mesh>
       </Billboard>
-      <points geometry={stars} material={starMaterial} renderOrder={-1} raycast={NO_RAYCAST} />
+      <points geometry={starGeometry} material={starMaterial} renderOrder={-1} raycast={NO_RAYCAST} />
       <points geometry={nebulae} material={nebulaMaterial} renderOrder={0} raycast={NO_RAYCAST} />
       <points geometry={dust} material={dustMaterial} renderOrder={0} raycast={NO_RAYCAST} />
     </group>

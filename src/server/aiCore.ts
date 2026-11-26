@@ -38,6 +38,35 @@ interface SearchItem {
   extractedText?: string;
 }
 
+interface BatchFile {
+  index: number;
+  name: string;
+  mimeType: string;
+  size?: number;
+  kind?: string;
+  status?: string;
+  note?: string;
+  truncated?: boolean;
+  text?: string;
+  imageBase64?: string;
+  imageMimeType?: string;
+}
+
+interface ChatMoon {
+  title: string;
+  text?: string;
+  status?: string;
+  note?: string;
+}
+
+interface ChatIndexEntry {
+  id: string;
+  title: string;
+  star?: string;
+  planet?: string;
+  status?: string;
+}
+
 const GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
 
 const GEMINI_KEY_NAME = 'GEMINI_API_KEY';
@@ -439,6 +468,296 @@ Return JSON with keys:
   }
 }
 
+/** Prompt budgets: defence in depth, since the client caps text as well. */
+const MAX_FILE_PROMPT_CHARS = 20_000;
+const MAX_TOTAL_PROMPT_CHARS = 160_000;
+const MAX_MOON_TEXT_CHARS = 20_000;
+const MAX_CHAT_INDEX = 150;
+/** Total base64 bytes accepted across inline images in one request. */
+const MAX_TOTAL_INLINE_IMAGE_CHARS = 3_000_000;
+
+function clampText(value: unknown, max: number): string {
+  if (typeof value !== 'string') return '';
+  return value.length > max ? value.slice(0, max) : value;
+}
+
+function stringField(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+const ORGANIZE_BATCH_PROMPT = `You are MindSpace's solar-system organizer. Every node is part of a hierarchy:
+- Star = Topic (the subject, e.g. "Calculus II", "Organic Chemistry")
+- Planet = Unit (a chapter/module inside that topic, e.g. "Radicals", "Absolute Functions")
+- Moon = one individual uploaded document/file
+
+Return strict JSON.
+
+Rules for grouping:
+- Return exactly one moons[] entry for every file index in the manifest, using the same index. Never drop, merge or invent files.
+- Group files that cover the same unit/chapter into one planet. Different units get different planets. Do not put every uploaded file into a single planet just because they arrived together, and never make one file the star while the rest become its moons.
+- Prefer an existing Star when the content genuinely fits it (semantic match, not filename match). Otherwise invent a concise, descriptive Star name (2-5 words).
+- Never use placeholder names such as "Untitled", "Unnamed", "Untagged", "Misc", "Other", "Files", or a raw filename as the Star name.
+- Reuse an existing planet name for the same star when the unit matches.
+
+Rules for content:
+- When a file's extraction status is "ok", base the title, summary, distilled_note and extracted_text ONLY on the supplied text. Use its real terminology, formulas, section names and examples.
+- When a file's status is empty/unsupported/error, its contents are UNKNOWN. Do not describe, summarize or guess what is inside. Build the title from the filename only, set extracted_text to "", and state plainly in distilled_note and summary that the text could not be extracted plus the reason from the manifest note.
+- extracted_text: for readable files return the most useful verbatim excerpts, key terms and formulas (not a paraphrase), up to 2000 characters. For images, describe only text and diagrams that are actually visible.
+- summary: 2-3 searchable sentences. distilled_note: one sharp takeaway sentence.
+- planet.summary: 1-2 sentences describing what the unit covers, grounded in its moons.
+- Colors: one distinct 6-digit hex color per Star.
+- related_ids: ids of existing nodes in this manifest/library that are genuinely related; may be empty.`;
+
+async function handleOrganizeBatch(
+  env: AiEnv | undefined,
+  payload: Record<string, unknown>,
+  options: AiHandlerOptions,
+): Promise<Response> {
+  const rawFiles = Array.isArray(payload.files) ? (payload.files as BatchFile[]) : [];
+  const stars = Array.isArray(payload.stars) ? (payload.stars as TopicRef[]) : [];
+  const units = Array.isArray(payload.units)
+    ? (payload.units as Array<{ star?: string; name?: string }>)
+    : [];
+
+  if (rawFiles.length === 0) {
+    return jsonResponse({ error: 'No files to organize.' }, 400);
+  }
+
+  const files = rawFiles.map((file, position) => ({
+    index: Number.isInteger(file.index) ? Number(file.index) : position,
+    name: stringField(file.name).trim() || `file-${position + 1}`,
+    mimeType: stringField(file.mimeType) || 'application/octet-stream',
+    kind: stringField(file.kind) || 'unknown',
+    status: stringField(file.status) || 'unknown',
+    note: stringField(file.note),
+    truncated: file.truncated === true,
+    text: stringField(file.text),
+    imageBase64: stringField(file.imageBase64),
+    imageMimeType: stringField(file.imageMimeType) || stringField(file.mimeType) || 'image/jpeg',
+  }));
+
+  const manifest = files
+    .map(
+      (file) =>
+        `[${file.index}] "${file.name}" | kind: ${file.kind} | extraction: ${file.status} | text chars: ${file.text.length}${file.truncated ? ' | truncated' : ''}${file.note ? ` | note: ${file.note}` : ''}`,
+    )
+    .join('\n');
+
+  const starList = stars
+    .map((star) => `- ${star.name} (${star.color})`)
+    .join('\n');
+  const unitList = units
+    .map((unit) => `- ${stringField(unit.star) || '(none)'} → ${stringField(unit.name)}`)
+    .join('\n');
+
+  const parts: Array<Record<string, unknown>> = [
+    {
+      text: `${ORGANIZE_BATCH_PROMPT}
+
+Existing Stars (topics):
+${starList || '(none)'}
+
+Existing Planets (star → unit):
+${unitList || '(none)'}
+
+File manifest:
+${manifest}`,
+    },
+  ];
+
+  let budget = MAX_TOTAL_PROMPT_CHARS;
+  let imageBudget = MAX_TOTAL_INLINE_IMAGE_CHARS;
+  for (const file of files) {
+    if (file.text && budget > 0) {
+      const text = clampText(file.text, Math.min(MAX_FILE_PROMPT_CHARS, budget));
+      budget -= text.length;
+      parts.push({
+        text: `--- Moon [${file.index}] ${file.name} — extracted text (${file.status}) ---\n${text}`,
+      });
+      continue;
+    }
+    if (file.imageBase64 && file.imageBase64.length <= imageBudget) {
+      imageBudget -= file.imageBase64.length;
+      parts.push({
+        inlineData: { mimeType: file.imageMimeType, data: file.imageBase64 },
+      });
+      parts.push({
+        text: `Above image is Moon [${file.index}] "${file.name}". Read only the text and diagrams that are actually visible; do not guess.`,
+      });
+      continue;
+    }
+    if (file.imageBase64) {
+      parts.push({
+        text: `Moon [${file.index}] "${file.name}" is an image that was omitted from this request (inline image budget). Its contents are unknown; do not invent them.`,
+      });
+      continue;
+    }
+    parts.push({
+      text: `Moon [${file.index}] "${file.name}" has NO readable text (status: ${file.status}). ${file.note} Do not invent its contents.`,
+    });
+  }
+
+  const raw = await generateWithFallback(
+    env,
+    () => ({
+      contents: [{ role: 'user', parts }],
+      generationConfig: {
+        responseMimeType: 'application/json',
+        thinkingConfig: { thinkingLevel: 'MEDIUM' },
+        responseSchema: {
+          type: 'OBJECT',
+          properties: {
+            star: {
+              type: 'OBJECT',
+              properties: { name: { type: 'STRING' }, color: { type: 'STRING' } },
+              required: ['name', 'color'],
+            },
+            planets: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  name: { type: 'STRING' },
+                  summary: { type: 'STRING' },
+                  moon_indices: { type: 'ARRAY', items: { type: 'INTEGER' } },
+                },
+                required: ['name', 'summary', 'moon_indices'],
+              },
+            },
+            moons: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  index: { type: 'INTEGER' },
+                  title: { type: 'STRING' },
+                  summary: { type: 'STRING' },
+                  distilled_note: { type: 'STRING' },
+                  extracted_text: { type: 'STRING' },
+                  planet: { type: 'STRING' },
+                },
+                required: ['index', 'title', 'summary', 'distilled_note', 'extracted_text', 'planet'],
+              },
+            },
+            related_ids: { type: 'ARRAY', items: { type: 'STRING' } },
+          },
+          required: ['star', 'planets', 'moons', 'related_ids'],
+        },
+      },
+    }),
+    options,
+  );
+
+  try {
+    return jsonResponse(JSON.parse(raw));
+  } catch {
+    return jsonResponse({ error: 'Invalid AI response', status: 502, raw, rawBody: raw }, 502);
+  }
+}
+
+const CHAT_PROMPT = `You are MindSpace's navigator and study assistant inside a 3D "solar system" library.
+Hierarchy: Star = Topic, Planet = Unit, Moon = one document/file.
+
+Answer using ONLY the context below. Hard rules:
+- Never invent document contents. If the active moon's extraction status is not "ok" or its text is empty, say plainly that the document's text could not be extracted (use the given reason) and offer help based on its filename only.
+- When asked about the active moon and its text is available, ground every claim in that text and say it comes from that document.
+- For file/library questions, use the index. ids you return must exist in the index.
+- Keep normal answers under 120 words, in short paragraphs or dashes. Say so plainly when nothing matches.
+- If the user asks you to organize, group, move or rename things, fill planets[] with { name, item_ids } using moon ids from the index; optionally set star_name/star_color. Only include items the user asked about.
+- focus_ids: ids the camera should fly to, best first. Empty when no navigation is wanted.`;
+
+async function handleChat(
+  env: AiEnv | undefined,
+  payload: Record<string, unknown>,
+  options: AiHandlerOptions,
+): Promise<Response> {
+  const message = stringField(payload.message).trim();
+  if (!message) return jsonResponse({ error: 'Empty message' }, 400);
+
+  const history = Array.isArray(payload.history)
+    ? (payload.history as Array<{ role?: string; content?: string }>)
+        .slice(-8)
+        .map((turn) => ({
+          role: turn.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: clampText(turn.content, 4000) }],
+        }))
+        .filter((turn) => turn.parts[0].text.trim().length > 0)
+    : [];
+
+  const moon = (payload.moon ?? null) as ChatMoon | null;
+  const index = Array.isArray(payload.index)
+    ? (payload.index as ChatIndexEntry[]).slice(0, MAX_CHAT_INDEX)
+    : [];
+
+  const moonText = moon ? clampText(moon.text, MAX_MOON_TEXT_CHARS) : '';
+  const moonStatus = moon ? stringField(moon.status) || 'unknown' : 'none';
+  const moonBlock = moon
+    ? `Active moon: "${stringField(moon.title)}" (extraction status: ${moonStatus})${moon.note ? `\nNote: ${moon.note}` : ''}\nActive moon text:\n${moonText.trim() ? moonText : '(NO EXTRACTABLE TEXT — contents unknown; say so if asked about it.)'}`
+    : 'Active moon: (none open) — answer at the library level.';
+
+  const indexBlock = index
+    .map(
+      (entry) =>
+        `- ${entry.id} | ${entry.title} | star: ${entry.star ?? '?'} | planet: ${entry.planet ?? '?'} | extraction: ${entry.status ?? 'unknown'}`,
+    )
+    .join('\n');
+
+  const raw = await generateWithFallback(
+    env,
+    () => ({
+      contents: [
+        ...history,
+        {
+          role: 'user',
+          parts: [
+            {
+              text: `${CHAT_PROMPT}
+
+${moonBlock}
+
+Library index (${index.length} moons):\n${indexBlock || '(empty)'}
+
+User message: ${message}`,
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        responseMimeType: 'application/json',
+        thinkingConfig: { thinkingLevel: 'LOW' },
+        responseSchema: {
+          type: 'OBJECT',
+          properties: {
+            reply: { type: 'STRING' },
+            focus_ids: { type: 'ARRAY', items: { type: 'STRING' } },
+            star_name: { type: 'STRING' },
+            star_color: { type: 'STRING' },
+            planets: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  name: { type: 'STRING' },
+                  item_ids: { type: 'ARRAY', items: { type: 'STRING' } },
+                },
+                required: ['name', 'item_ids'],
+              },
+            },
+          },
+          required: ['reply'],
+        },
+      },
+    }),
+    options,
+  );
+
+  try {
+    return jsonResponse(JSON.parse(raw));
+  } catch {
+    return jsonResponse({ error: 'Invalid AI response', status: 502, raw, rawBody: raw }, 502);
+  }
+}
+
 /**
  * Handle a `/api/ai` request. Shared by the Cloudflare Worker and the Vercel
  * Function so both hosts get identical actions, prompts and error shapes.
@@ -455,6 +774,8 @@ export async function handleAiRequest(
   try {
     const payload = (await request.json()) as Record<string, unknown>;
     if (payload.action === 'organize') return await handleOrganize(env, payload, options);
+    if (payload.action === 'organize_batch') return await handleOrganizeBatch(env, payload, options);
+    if (payload.action === 'chat') return await handleChat(env, payload, options);
     if (payload.action === 'search') return await handleSearch(env, payload, options);
     if (payload.action === 'analyze_gaps') return await handleAnalyzeGaps(env, payload, options);
     if (payload.action === 'synthesize_topic') return await handleSynthesizeTopic(env, payload, options);

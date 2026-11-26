@@ -5,17 +5,27 @@ import { CameraController, type CameraFocus } from './components/CameraControlle
 import * as THREE from 'three';
 import type { MindItem } from '../ui/types';
 import type { Region } from '../core/types';
+import { buildSolarSystem, planetKey, type SolarPlanet, type SolarStar } from '../lib/solar';
 import { StarNode } from './components/StarNode';
 import { DeepStarfield } from './components/DeepStarfield';
+import { buildDeepStarfieldData, DEEP_STARFIELD } from './components/deepStarData';
+import { StarWarp, selectWarpStars } from './components/StarWarp';
 import { BlackHole } from './components/BlackHole';
-import { MilkyWay, milkyWayArmPoint } from './components/MilkyWay';
+import { MilkyWay, milkyWayArmPoint, buildMilkyWayStars } from './components/MilkyWay';
 
-interface Cluster {
-  name: string;
-  color: string;
+interface StarCluster {
+  star: SolarStar;
   region: Region;
-  items: MindItem[];
   center: [number, number, number];
+}
+
+/** Imperative camera fly-to request that also survives the flight itself. */
+export interface SolarFocusRequest {
+  token: number;
+  kind: 'home' | 'star' | 'planet' | 'moon';
+  star?: string;
+  planet?: string;
+  itemId?: string;
 }
 
 interface GraphEdge {
@@ -167,93 +177,223 @@ const PULSE_FRAGMENT = /* glsl */ `
 function TopicHub({
   cluster,
   registerRef,
+  onSelect,
 }: {
-  cluster: Cluster;
+  cluster: StarCluster;
   registerRef: (id: string, obj: THREE.Object3D | null) => void;
+  onSelect: (name: string) => void;
 }) {
   const ref = useRef<THREE.Group>(null);
+  const starId = `star:${cluster.star.name}`;
 
   useEffect(() => {
-    if (ref.current) registerRef(`topic:${cluster.name}`, ref.current);
-    return () => registerRef(`topic:${cluster.name}`, null);
-  }, [cluster.name, registerRef]);
+    if (ref.current) registerRef(starId, ref.current);
+    return () => registerRef(starId, null);
+  }, [starId, registerRef]);
 
   return (
     <group ref={ref} position={cluster.center}>
       <StarNode
-        seed={cluster.name}
+        seed={cluster.star.name}
         region={cluster.region}
-        accent={cluster.color}
-        color={cluster.color}
+        accent={cluster.star.color}
+        color={cluster.star.color}
         dimmed={false}
         hovered={false}
         selected={false}
         emphasized={false}
       />
-      <Html position={[0, 2.4, 0]} center style={{ pointerEvents: 'none' }}>
-        <span style={{ color: cluster.color, fontSize: 11, fontWeight: 600 }}>
-          {cluster.name}
+      <mesh
+        onClick={(event) => {
+          event.stopPropagation();
+          onSelect(cluster.star.name);
+        }}
+        onPointerOver={() => {
+          document.body.style.cursor = 'pointer';
+        }}
+        onPointerOut={() => {
+          document.body.style.cursor = '';
+        }}
+      >
+        <sphereGeometry args={[2.2, 12, 12]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+      {/* Labels must never paint over HUD panels/modals: cap their z-index
+          well below the overlay layers (z-30 and up). */}
+      <Html
+        position={[0, 2.4, 0]}
+        center
+        zIndexRange={[12, 0]}
+        style={{ pointerEvents: 'none' }}
+      >
+        <span style={{ color: cluster.star.color, fontSize: 11, fontWeight: 600 }}>
+          {cluster.star.name}
         </span>
       </Html>
     </group>
   );
 }
 
-function Moon({ seed }: { seed: string }) {
+/** One document orbiting its unit. Clicking it opens the document window. */
+function DocumentMoon({
+  moon,
+  index,
+  count,
+  hovered,
+  selected,
+  registerRef,
+  onHover,
+  onSelect,
+}: {
+  moon: MindItem;
+  index: number;
+  count: number;
+  hovered: boolean;
+  selected: boolean;
+  registerRef: (id: string, obj: THREE.Object3D | null) => void;
+  onHover: (id: string | null) => void;
+  onSelect: (id: string) => void;
+}) {
   const ref = useRef<THREE.Group>(null);
+  const meshRef = useRef<THREE.Mesh>(null);
   const timeRef = useRef(0);
+  // World-space anchor: filaments and the camera read `.position`, but this
+  // group's own position is local to its orbiting planet.
+  const anchor = useMemo(() => new THREE.Object3D(), []);
+
+  useEffect(() => {
+    registerRef(moon.id, anchor);
+    return () => registerRef(moon.id, null);
+  }, [anchor, moon.id, registerRef]);
   const params = useMemo(() => {
-    const random = mulberry32(hashValue(seed));
+    const random = mulberry32(hashValue(`${moon.id}:moon`));
+    const step = count > 0 ? index / count : 0;
     return {
-      a: 0.35 + random() * 0.25,
-      b: (0.35 + random() * 0.25) * (0.6 + random() * 0.3),
-      tilt: (random() - 0.5) * 1.2,
-      speed: 0.6 + random() * 0.8,
-      phase: random() * Math.PI * 2,
+      radius: 1.55 + step * 1.5 + random() * 0.3,
+      speed: 0.45 + random() * 0.45,
+      phase: step * Math.PI * 2 + random() * 0.35,
+      incline: (random() - 0.5) * 0.6,
+      size: 0.085 + random() * 0.035,
     };
-  }, [seed]);
+  }, [count, index, moon.id]);
 
   useFrame((_, delta) => {
     timeRef.current += delta;
     const t = timeRef.current * params.speed + params.phase;
-    const x = params.a * Math.cos(t);
-    const z = params.b * Math.sin(t);
-    const y = Math.sin(t * 2.0) * 0.05;
-    const cos = Math.cos(params.tilt);
-    const sin = Math.sin(params.tilt);
-    const y1 = y * cos - z * sin;
-    const z1 = y * sin + z * cos;
-    if (ref.current) ref.current.position.set(x, y1, z1);
+    const x = Math.cos(t) * params.radius;
+    const z = Math.sin(t) * params.radius;
+    const y = Math.sin(t * 1.4) * params.incline * params.radius;
+    if (ref.current) {
+      ref.current.position.set(x, y, z);
+      ref.current.getWorldPosition(anchor.position);
+    }
+    if (meshRef.current) {
+      const target = selected ? 1.7 : hovered ? 1.3 : 1;
+      const next = THREE.MathUtils.damp(meshRef.current.scale.x, target, 9, delta);
+      meshRef.current.scale.setScalar(next);
+    }
   });
+
+  const hasText = (moon.extractionStatus ?? 'ok') === 'ok';
 
   return (
     <group ref={ref}>
-      <mesh>
-        <sphereGeometry args={[0.06, 12, 12]} />
-        <meshBasicMaterial color="#cbd5e1" toneMapped={false} />
+      <mesh
+        ref={meshRef}
+        onClick={(event) => {
+          event.stopPropagation();
+          onSelect(moon.id);
+        }}
+        onPointerOver={(event) => {
+          event.stopPropagation();
+          onHover(moon.id);
+          document.body.style.cursor = 'pointer';
+        }}
+        onPointerOut={() => {
+          onHover(null);
+          document.body.style.cursor = '';
+        }}
+      >
+        <sphereGeometry args={[params.size, 12, 12]} />
+        <meshStandardMaterial
+          color={selected ? '#ffffff' : moon.topicColor || '#cbd5e1'}
+          emissive={selected ? '#ffffff' : '#93a4bb'}
+          emissiveIntensity={selected ? 0.9 : hovered ? 0.45 : 0.16}
+          roughness={0.7}
+        />
       </mesh>
+      {(hovered || selected) && (
+        <Html
+          position={[0, 0.34, 0]}
+          center
+          zIndexRange={[12, 0]}
+          style={{ pointerEvents: 'none' }}
+        >
+          <div className="hud-panel w-max max-w-[13rem] px-2 py-1 text-left">
+            <p className="text-[9px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+              moon · {hasText ? 'document' : 'no text'}
+            </p>
+            <p className="mt-0.5 line-clamp-2 text-[11px] font-medium leading-snug text-white">
+              {moon.title}
+            </p>
+          </div>
+        </Html>
+      )}
     </group>
   );
 }
 
+/** Bare display item for a unit that has no stored node yet. */
+function planetItem(planet: SolarPlanet): MindItem {
+  return {
+    id: planet.id ?? `unit:${planet.key}`,
+    title: planet.name,
+    content: planet.summary ?? '',
+    type: 'note',
+    region: 'hippocampus',
+    tags: [planet.star],
+    attachments: [],
+    moodScore: null,
+    createdAt: '1970-01-01T00:00:00.000Z',
+    links: [],
+    topic: planet.star,
+    topicColor: planet.color,
+    unit: planet.name,
+    entryType: 'unit',
+    parentId: null,
+  };
+}
+
 function Planet({
   item,
+  moons,
   clusterCenter,
   nodeRefs,
   registerRef,
+  focusKey,
   selected,
   hovered,
+  hoveredMoonId,
+  selectedMoonId,
   onHover,
-  onSelect,
+  onHoverMoon,
+  onSelectMoon,
+  onSelectPlanet,
 }: {
   item: MindItem;
+  moons: MindItem[];
   clusterCenter: [number, number, number];
   nodeRefs: { current: Map<string, THREE.Object3D> };
   registerRef: (id: string, obj: THREE.Object3D | null) => void;
+  focusKey: string;
   selected: boolean;
   hovered: boolean;
+  hoveredMoonId: string | null;
+  selectedMoonId: string | null;
   onHover: (id: string | null) => void;
-  onSelect: (id: string) => void;
+  onHoverMoon: (id: string | null) => void;
+  onSelectMoon: (id: string) => void;
+  onSelectPlanet: () => void;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const orbitGroupRef = useRef<THREE.Group>(null);
@@ -275,12 +415,7 @@ function Planet({
         ? 0.05 + random() * 0.05
         : 0.08 + random() * 0.10;
     const mountain = random() > 0.45;
-    const moonCount = random() < 0.35 ? 1 + Math.floor(random() * 2) : 0;
-    const moonSeeds = Array.from(
-      { length: moonCount },
-      (_, index) => `${item.id}:moon:${index}`,
-    );
-    return { a, b, tiltX, tiltZ, yaw, speed, phase, size, mountain, moonSeeds };
+    return { a, b, tiltX, tiltZ, yaw, speed, phase, size, mountain };
   }, [item.id, item.entryType]);
 
   const orbitGeometry = useMemo(() => {
@@ -353,9 +488,16 @@ function Planet({
   );
 
   useEffect(() => {
-    if (groupRef.current) registerRef(item.id, groupRef.current);
-    return () => registerRef(item.id, null);
-  }, [item.id, registerRef]);
+    if (groupRef.current) {
+      registerRef(focusKey, groupRef.current);
+      // Also register the unit node id so AI-created links resolve in 3D.
+      if (item.id !== focusKey) registerRef(item.id, groupRef.current);
+    }
+    return () => {
+      registerRef(focusKey, null);
+      if (item.id !== focusKey) registerRef(item.id, null);
+    };
+  }, [focusKey, item.id, registerRef]);
 
   useFrame((_, delta) => {
     timeRef.current += delta;
@@ -434,11 +576,11 @@ function Planet({
         ref={meshRef}
         onClick={(event) => {
           event.stopPropagation();
-          onSelect(item.id);
+          onSelectPlanet();
         }}
         onPointerOver={(event) => {
           event.stopPropagation();
-          onHover(item.id);
+          onHover(focusKey);
           document.body.style.cursor = 'pointer';
         }}
         onPointerOut={() => {
@@ -456,14 +598,29 @@ function Planet({
           fragmentShader={PLANET_FRAGMENT}
         />
       </mesh>
-      {params.moonSeeds.map((seed) => (
-        <Moon key={seed} seed={seed} />
+      {moons.map((moon, index) => (
+        <DocumentMoon
+          key={moon.id}
+          moon={moon}
+          index={index}
+          count={moons.length}
+          hovered={hoveredMoonId === moon.id}
+          selected={selectedMoonId === moon.id}
+          registerRef={registerRef}
+          onHover={onHoverMoon}
+          onSelect={onSelectMoon}
+        />
       ))}
       {(hovered || selected) && (
-        <Html position={[0, params.size + 0.6, 0]} center style={{ pointerEvents: 'none' }}>
+        <Html
+          position={[0, params.size + 0.6, 0]}
+          center
+          zIndexRange={[12, 0]}
+          style={{ pointerEvents: 'none' }}
+        >
           <div className="hud-panel w-max max-w-[14rem] px-2.5 py-1.5 text-left">
             <p className="text-[9px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-              {item.topic || 'Untagged'}
+              planet · {item.topic || 'Unsorted'}
             </p>
             <p className="mt-0.5 line-clamp-2 text-xs font-medium leading-snug text-white">
               {item.title}
@@ -930,42 +1087,50 @@ function DynamicEdges({
 
 export function TopicGraph({
   items,
-  selectedId,
-  onSelect,
+  focusRequest,
+  onArrive,
+  selectedMoonId,
+  selectedPlanetKey,
+  onSelectStar,
+  onSelectPlanet,
+  onSelectMoon,
 }: {
   items: MindItem[];
-  selectedId: string | null;
-  onSelect: (id: string) => void;
+  focusRequest: SolarFocusRequest | null;
+  onArrive?: () => void;
+  selectedMoonId: string | null;
+  selectedPlanetKey: string | null;
+  onSelectStar: (name: string) => void;
+  onSelectPlanet: (star: string, planet: string) => void;
+  onSelectMoon: (id: string) => void;
 }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const [hoveredPlanetKey, setHoveredPlanetKey] = useState<string | null>(null);
   const [focus, setFocus] = useState<CameraFocus | null>(null);
-  const lastSelected = useRef<string | null>(null);
+  const lastFocusToken = useRef<number | null>(null);
   const nodeRefs = useRef<Map<string, THREE.Object3D>>(new Map());
+  const onArriveRef = useRef(onArrive);
+
+  useEffect(() => {
+    onArriveRef.current = onArrive;
+  }, [onArrive]);
 
   const registerRef = useCallback((id: string, obj: THREE.Object3D | null) => {
     if (obj) nodeRefs.current.set(id, obj);
     else nodeRefs.current.delete(id);
   }, []);
 
-  const clusters = useMemo<Cluster[]>(() => {
-    const map = new Map<string, { name: string; color: string; region: Region; items: MindItem[] }>();
-    for (const item of items) {
-      const name = item.topic || 'Untagged';
-      const color = item.topicColor || '#94a3b8';
-      if (!map.has(name)) {
-        map.set(name, { name, color, region: item.region, items: [] });
-      }
-      map.get(name)!.items.push(item);
-    }
-    const list = [...map.values()];
-    // Each topic's solar system sits on a spiral arm, spread out along the
-    // arms (golden-ratio stepping) so zooming to one is a real journey.
-    return list.map((cluster, index) => {
-      const random = mulberry32(hashValue(`cluster:${cluster.name}`));
+  const clusters = useMemo<StarCluster[]>(() => {
+    // Each Star (topic) owns Planets (units) and their Moons (documents).
+    // Systems sit on a spiral arm (golden-ratio stepping), so flying to one
+    // is a real journey rather than a nudge.
+    return buildSolarSystem(items).map((star, index) => {
+      const random = mulberry32(hashValue(`cluster:${star.name}`));
       const arm = index % 4;
       const t = 0.16 + ((index * 0.618034 + 0.21) % 1) * 0.34;
       const center = milkyWayArmPoint(t, arm, (random() - 0.5) * 6);
-      return { ...cluster, center };
+      const firstMoon = star.planets.flatMap((planet) => planet.moons)[0];
+      return { star, region: firstMoon?.region ?? 'hippocampus', center };
     });
   }, [items]);
 
@@ -994,9 +1159,9 @@ export function TopicGraph({
     // Then wandering filaments: each planet reaches out to one or two random
     // places elsewhere in the galaxy (other planets, or other topics' stars),
     // never back to its own star. Seeded by id so they're stable across renders.
-    const topicIds = [...new Set(items.map((item) => `topic:${item.topic || 'Untagged'}`))];
+    const topicIds = [...new Set(items.map((item) => `star:${item.topic || 'Unsorted'}`))];
     for (const item of items) {
-      const ownTopic = `topic:${item.topic || 'Untagged'}`;
+      const ownTopic = `star:${item.topic || 'Unsorted'}`;
       const random = mulberry32(hashValue(`${item.id}:filaments`));
       const otherPlanets = items.filter((other) => other.id !== item.id).map((other) => other.id);
       const foreignPlanets = items
@@ -1054,6 +1219,21 @@ export function TopicGraph({
     return stars;
   }, []);
 
+  const deepStars = useMemo(
+    () =>
+      buildDeepStarfieldData(
+        DEEP_STARFIELD.count,
+        DEEP_STARFIELD.innerRadius,
+        DEEP_STARFIELD.depth,
+      ),
+    [],
+  );
+
+  // The galaxy's real stars, built once and shared with the trail effect so a
+  // streak always begins exactly on a visible particle.
+  const milkyStars = useMemo(() => buildMilkyWayStars(200000), []);
+  const warpStars = useMemo(() => selectWarpStars(milkyStars, 4200), [milkyStars]);
+
   const view = useMemo(
     () => ({
       // Far enough out that the whole galaxy reads as one shape.
@@ -1067,24 +1247,52 @@ export function TopicGraph({
   );
 
   useEffect(() => {
-    if (selectedId === lastSelected.current) return;
-    lastSelected.current = selectedId;
-    if (!selectedId) {
-      setFocus({ position: null, token: Date.now() });
-      return;
-    }
-    const node = nodeRefs.current.get(selectedId);
-    if (node) {
-      // Follow the live planet: it keeps orbiting while we fly in.
-      setFocus({ position: null, follow: node, token: Date.now() });
-      return;
-    }
-    const item = itemById.get(selectedId);
-    const cluster = clusters.find((entry) => entry.name === (item?.topic || 'Untagged'));
-    if (cluster) {
-      setFocus({ position: cluster.center, distance: 24, token: Date.now() });
-    }
-  }, [selectedId, clusters, itemById]);
+    if (!focusRequest) return;
+    if (lastFocusToken.current === focusRequest.token) return;
+    const token = focusRequest.token;
+    const arrive = () => onArriveRef.current?.();
+    let cancelled = false;
+    let attempts = 0;
+
+    const attempt = () => {
+      if (cancelled) return;
+      const targetKey =
+        focusRequest.kind === 'star'
+          ? `star:${focusRequest.star ?? ''}`
+          : focusRequest.kind === 'planet'
+            ? `planet:${planetKey(focusRequest.star ?? '', focusRequest.planet ?? '')}`
+            : focusRequest.itemId ?? '';
+      const object = targetKey ? nodeRefs.current.get(targetKey) : undefined;
+      const cluster = clusters.find((entry) => entry.star.name === focusRequest.star);
+
+      // Just-imported nodes may mount a frame or two after the request.
+      if (focusRequest.kind !== 'home' && !object && !cluster && attempts < 8) {
+        attempts += 1;
+        window.setTimeout(attempt, 150);
+        return;
+      }
+
+      lastFocusToken.current = token;
+      const distance =
+        focusRequest.kind === 'moon' ? 3.2 : focusRequest.kind === 'planet' ? 8 : 26;
+
+      if (object) {
+        // Follow the live body: planets and moons keep orbiting during the flight.
+        setFocus({ position: null, follow: object, distance, token, onArrive: arrive });
+        return;
+      }
+      if (cluster) {
+        setFocus({ position: cluster.center, distance: 24, token, onArrive: arrive });
+        return;
+      }
+      setFocus({ position: null, token, onArrive: arrive });
+    };
+
+    attempt();
+    return () => {
+      cancelled = true;
+    };
+  }, [focusRequest, clusters]);
 
   return (
     <Canvas
@@ -1093,34 +1301,43 @@ export function TopicGraph({
       gl={{ antialias: true, alpha: false }}
     >
       <color attach="background" args={['#000000']} />
-      <CameraController focus={focus} view={view} warp />
+      <CameraController focus={focus} view={view} />
       {/* Distant background stars far beyond the galaxy. */}
-      <DeepStarfield count={6000} innerRadius={14000} depth={6000} />
-      <MilkyWay />
+      <DeepStarfield data={deepStars} />
+      {/* Light trails generated by those stars as the camera sweeps past. */}
+      <StarWarp positions={warpStars.positions} colors={warpStars.colors} />
+      <MilkyWay stars={milkyStars} />
       {/* Scaled up so it still reads as the galaxy's heart from far away. */}
       <group scale={4}>
         <BlackHole />
       </group>
       {clusters.map((cluster) => (
-        <TopicHub key={cluster.name} cluster={cluster} registerRef={registerRef} />
+        <group key={cluster.star.name}>
+          <TopicHub cluster={cluster} registerRef={registerRef} onSelect={onSelectStar} />
+          {cluster.star.planets.map((planet) => (
+            <Planet
+              key={planet.key}
+              item={planetItem(planet)}
+              moons={planet.moons}
+              clusterCenter={cluster.center}
+              nodeRefs={nodeRefs}
+              registerRef={registerRef}
+              focusKey={`planet:${planet.key}`}
+              selected={
+                selectedPlanetKey === planet.key ||
+                planet.moons.some((moon) => moon.id === selectedMoonId)
+              }
+              hovered={hoveredPlanetKey === `planet:${planet.key}`}
+              hoveredMoonId={hoveredId}
+              selectedMoonId={selectedMoonId}
+              onHover={setHoveredPlanetKey}
+              onHoverMoon={setHoveredId}
+              onSelectMoon={onSelectMoon}
+              onSelectPlanet={() => onSelectPlanet(cluster.star.name, planet.name)}
+            />
+          ))}
+        </group>
       ))}
-      {items.map((item) => {
-        const cluster = clusters.find((entry) => entry.name === (item.topic || 'Untagged'));
-        if (!cluster) return null;
-        return (
-          <Planet
-            key={item.id}
-            item={item}
-            clusterCenter={cluster.center}
-            nodeRefs={nodeRefs}
-            registerRef={registerRef}
-            selected={item.id === selectedId}
-            hovered={item.id === hoveredId}
-            onHover={setHoveredId}
-            onSelect={onSelect}
-          />
-        );
-      })}
       {ambientStars.map((star, index) => (
         <AmbientStar key={`ambient-star-${index}`} spec={star} />
       ))}

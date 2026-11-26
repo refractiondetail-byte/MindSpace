@@ -51,6 +51,13 @@ export type ThoughtType = (typeof THOUGHT_TYPES)[number];
 export type AttachmentKind = 'image' | 'file';
 
 /**
+ * Outcome of reading a document's text layer (PDF/DOCX/PPTX/TXT/image).
+ * Stored on the node so the AI can be told—and the UI can show—when a file's
+ * contents could not be read, instead of inventing them.
+ */
+export type DocumentExtractionStatus = 'ok' | 'empty' | 'unsupported' | 'error';
+
+/**
  * Attachment metadata lives on the node; the binary itself is stored in the
  * separate `attachments` IndexedDB table (see `db.ts`) keyed by this same id.
  */
@@ -78,6 +85,13 @@ export interface ThoughtNode {
   /** Ids of related ThoughtNodes. */
   links: string[];
 }
+
+/**
+ * Solar-system role of a node. The HUD/3D scene maps these to
+ * Star (topic) → Planet (unit) → Moon (document).
+ * `attachment` is the legacy pre-hierarchy label and reads as `moon`.
+ */
+export type SolarRole = 'topic' | 'unit' | 'moon' | 'attachment';
 
 /** Shape accepted when creating a node; storage/factory fills the rest. */
 export interface ThoughtDraft {

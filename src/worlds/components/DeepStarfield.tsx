@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
+import { buildDeepStarfieldData, type DeepStarfieldData } from './deepStarData';
+
+/** Original framing for callers that do not share a prebuilt field. */
+const DEFAULT_FIELD = { count: 5200, innerRadius: 110, depth: 105 } as const;
 
 const VERTEX = /* glsl */ `
   uniform float uTime;
@@ -48,69 +52,29 @@ const FRAGMENT = /* glsl */ `
   }
 `;
 
-const PALETTE = ['#f8fbff', '#dbe8f8', '#f6e8cd', '#c7d8ec', '#ffffff'];
-
-function mulberry32(seed: number): () => number {
-  let state = seed;
-  return () => {
-    state |= 0;
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 /** Sparse, color-varied deep-space stars on a distant shell. */
-export function DeepStarfield({
-  count = 5200,
-  innerRadius = 110,
-  depth = 105,
-}: {
-  count?: number;
-  /** Distance of the star shell from the origin. */
-  innerRadius?: number;
-  depth?: number;
-}) {
+export function DeepStarfield({ data }: { data?: DeepStarfieldData }) {
   const dpr = useThree((state) => state.viewport.dpr);
   const timeRef = useRef(0);
 
+  const fallback = useMemo(
+    () =>
+      data
+        ? null
+        : buildDeepStarfieldData(DEFAULT_FIELD.count, DEFAULT_FIELD.innerRadius, DEFAULT_FIELD.depth),
+    [data],
+  );
+  const field = data ?? (fallback as DeepStarfieldData);
+
   const geometry = useMemo(() => {
-    const random = mulberry32(730201);
-    const positions = new Float32Array(count * 3);
-    const colors = new Float32Array(count * 3);
-    const sizes = new Float32Array(count);
-    const alphas = new Float32Array(count);
-    const phases = new Float32Array(count);
-    const palette = PALETTE.map((value) => new THREE.Color(value));
-
-    for (let index = 0; index < count; index += 1) {
-      const azimuth = random() * Math.PI * 2;
-      const elevation = Math.acos(2 * random() - 1);
-      const radius = innerRadius + random() * depth;
-      positions[index * 3] = Math.sin(elevation) * Math.cos(azimuth) * radius;
-      positions[index * 3 + 1] = Math.cos(elevation) * radius;
-      positions[index * 3 + 2] = Math.sin(elevation) * Math.sin(azimuth) * radius;
-
-      const color = palette[Math.floor(random() * palette.length)];
-      const brightness = 0.55 + random() * 0.45;
-      colors[index * 3] = color.r * brightness;
-      colors[index * 3 + 1] = color.g * brightness;
-      colors[index * 3 + 2] = color.b * brightness;
-
-      sizes[index] = random() > 0.985 ? 1.2 + random() * 1.2 : 0.3 + random() * 0.9;
-      alphas[index] = 0.28 + random() * 0.62;
-      phases[index] = random();
-    }
-
     const buffer = new THREE.BufferGeometry();
-    buffer.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    buffer.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
-    buffer.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
-    buffer.setAttribute('aAlpha', new THREE.BufferAttribute(alphas, 1));
-    buffer.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
+    buffer.setAttribute('position', new THREE.BufferAttribute(field.positions, 3));
+    buffer.setAttribute('aColor', new THREE.BufferAttribute(field.colors, 3));
+    buffer.setAttribute('aSize', new THREE.BufferAttribute(field.sizes, 1));
+    buffer.setAttribute('aAlpha', new THREE.BufferAttribute(field.alphas, 1));
+    buffer.setAttribute('aPhase', new THREE.BufferAttribute(field.phases, 1));
     return buffer;
-  }, [count, innerRadius, depth]);
+  }, [field]);
 
   const material = useMemo(
     () =>

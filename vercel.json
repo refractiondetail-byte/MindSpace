@@ -5,7 +5,8 @@
   "outputDirectory": "dist",
   "functions": {
     "api/ai.ts": {
-      "includeFiles": "src/server/**"
+      "includeFiles": "src/server/**",
+      "maxDuration": 60
     }
   },
   "rewrites": [

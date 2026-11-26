@@ -9,6 +9,12 @@
 import { handleAiRequest, readEnv } from '../src/server/aiCore.js';
 
 /**
+ * Large PDF/PPTX/DOCX batches need more than the 10s default on some plans.
+ * Vercel clamps this to the plan maximum (60s Hobby/Pro with Fluid compute).
+ */
+export const maxDuration = 60;
+
+/**
  * Vercel Function for `/api/ai` (Node.js runtime, fetch Web Standard export).
  * `api/ai.ts` maps to the `/api/ai` route automatically, so no rewrite is needed.
  */

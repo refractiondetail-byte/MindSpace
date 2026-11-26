@@ -230,3 +230,93 @@ canvas {
     animation: none;
   }
 }
+
+/* ------------------------------------------------- solar planet previews */
+.planet-preview {
+  --planet-color: #94a3b8;
+  --planet-tilt: 12deg;
+  --planet-spin-duration: 8s;
+  --planet-preview-size: 48px;
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  isolation: isolate;
+}
+
+.planet-preview__ball {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  border-radius: 9999px;
+  transform: rotate(var(--planet-tilt));
+  background-image:
+    radial-gradient(circle at 30% 26%, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0) 44%),
+    radial-gradient(circle at 68% 74%, rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0) 68%),
+    repeating-linear-gradient(
+      108deg,
+      color-mix(in srgb, var(--planet-color) 86%, #05070a) 0 8px,
+      color-mix(in srgb, var(--planet-color) 58%, #ffffff) 8px 15px
+    );
+  background-size: 100% 100%, 100% 100%, 260% 100%;
+  background-position: 0 0, 0 0, 0 0;
+  box-shadow:
+    inset -10px -12px 22px rgba(0, 0, 0, 0.6),
+    0 0 22px -8px var(--planet-color);
+  animation: planet-band-spin var(--planet-spin-duration) linear infinite;
+}
+
+.planet-preview__ring {
+  position: absolute;
+  width: 142%;
+  height: 34%;
+  border-radius: 9999px;
+  border: 1px solid color-mix(in srgb, var(--planet-color) 70%, #ffffff);
+  opacity: 0.55;
+  transform: rotate(-18deg);
+  box-shadow: 0 0 12px -4px var(--planet-color);
+  pointer-events: none;
+}
+
+.planet-preview__orbit {
+  position: absolute;
+  inset: -8%;
+  animation: planet-orbit 9s linear infinite;
+  pointer-events: none;
+}
+
+.planet-preview__moon {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  height: calc(var(--planet-preview-size) * 0.09);
+  width: calc(var(--planet-preview-size) * 0.09);
+  margin: calc(var(--planet-preview-size) * -0.045);
+  border-radius: 9999px;
+  background: #e2e8f0;
+  box-shadow: 0 0 6px rgba(226, 232, 240, 0.75);
+  transform: rotate(calc(var(--moon-index) * 137deg))
+    translateY(calc(var(--planet-preview-size) * -0.62));
+}
+
+@keyframes planet-band-spin {
+  from {
+    background-position: 0 0, 0 0, 0 0;
+  }
+  to {
+    background-position: 0 0, 0 0, 260% 0;
+  }
+}
+
+@keyframes planet-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .planet-preview__ball,
+  .planet-preview__orbit {
+    animation: none;
+  }
+}
