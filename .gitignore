@@ -8,3 +8,6 @@ dist-ssr
 # Cloudflare Worker local secrets (put GEMINI_API_KEY=... in .dev.vars for local dev)
 .dev.vars
 .wrangler/
+
+# Vercel CLI local project link
+.vercel
