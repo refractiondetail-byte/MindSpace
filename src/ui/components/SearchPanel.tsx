@@ -158,7 +158,7 @@ export function SearchPanel({
       )}
 
       {trimmed && (
-        <div className="mt-2 rounded-xl border border-[#1f1f1f] bg-[#09090b] p-1.5">
+        <div className="mt-1 border-t border-white/[0.07] pt-1.5">
           {results.length === 0 ? (
             <p className="px-2 py-3 text-center text-xs text-slate-400">
               Nothing matches “{trimmed}”.
@@ -241,7 +241,7 @@ export function SearchPanel({
             </ul>
           )}
           {remaining > 0 && (
-            <p className="px-2 pb-1 pt-1.5 text-[10px] text-slate-500">
+            <p className="px-2 pb-0.5 pt-1.5 text-[10px] text-slate-500">
               +{remaining} more {remaining === 1 ? 'match' : 'matches'} — keep typing to narrow.
             </p>
           )}

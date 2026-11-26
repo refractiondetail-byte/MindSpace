@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { deleteThought, getAttachmentBlob, updateThought } from '../../core/repository';
@@ -8,6 +8,7 @@ import { recordNoteVersion } from '../../lib/noteVersions';
 import type { MindItem } from '../types';
 import { REGION_META, type Attachment, type ThoughtNode } from '../../core/types';
 import { loadClusterNames } from '../../lib/clusterNames';
+import { AiProgressScreen, type AiJobMode } from './AiProgress';
 import { ImageViewer } from './ImageViewer';
 import { TextViewer } from './TextViewer';
 import { formatBytes, formatDate } from '../format';
@@ -39,6 +40,13 @@ export function NodeInspector({
   const [synthesisResult, setSynthesisResult] = useState<SynthesisResult | null>(null);
   const [synthesisLoading, setSynthesisLoading] = useState(false);
   const [synthesisError, setSynthesisError] = useState<string | null>(null);
+  const [aiJob, setAiJob] = useState<{
+    mode: AiJobMode;
+    topic: string;
+    count: number;
+    done: boolean;
+  } | null>(null);
+  const aiJobHideRef = useRef<number | null>(null);
   const [moveTopicSelection, setMoveTopicSelection] = useState<string>('');
   const [newTopicName, setNewTopicName] = useState('');
   const [mergeOpen, setMergeOpen] = useState(false);
@@ -56,6 +64,9 @@ export function NodeInspector({
   }, [thoughts]);
 
   useEffect(() => {
+    if (aiJobHideRef.current !== null) window.clearTimeout(aiJobHideRef.current);
+    aiJobHideRef.current = null;
+    setAiJob(null);
     setShowHistory(false);
     setGapResult(null);
     setGapError(null);
@@ -73,30 +84,42 @@ export function NodeInspector({
     void listNoteVersions(node.id).then(setVersions);
   }, [node?.id]);
 
+  function finishAiJob(success: boolean) {
+    if (aiJobHideRef.current !== null) window.clearTimeout(aiJobHideRef.current);
+    aiJobHideRef.current = null;
+    if (!success) {
+      setAiJob(null);
+      return;
+    }
+    setAiJob((current) => (current ? { ...current, done: true } : current));
+    aiJobHideRef.current = window.setTimeout(() => setAiJob(null), 900);
+  }
+
+  useEffect(
+    () => () => {
+      if (aiJobHideRef.current !== null) window.clearTimeout(aiJobHideRef.current);
+    },
+    [],
+  );
+
   async function handleScanGaps() {
     if (!node) return;
     const mindNode = node as MindItem;
-    const topicItems = thoughts
-      .filter((item) => (item as MindItem).topic === mindNode.topic)
-      .map((item) => {
-        const mindItem = item as MindItem;
-        return {
-          title: mindItem.title,
-          distilledNote: mindItem.distilledNote,
-          summary: mindItem.summary,
-          extractedText: mindItem.extractedText,
-        };
-      });
+    const topic = mindNode.topic || node.title;
+    const topicItems = topicItemsFor(topic);
     setGapLoading(true);
     setGapError(null);
+    setAiJob({ mode: 'gaps', topic, count: Math.max(topicItems.length, 1), done: false });
     try {
       const result = await analyzeGapsWithAI({
-        topic: mindNode.topic || node.title,
+        topic,
         items: topicItems.length ? topicItems : [{ title: node.title, distilledNote: mindNode.distilledNote, summary: mindNode.summary, extractedText: mindNode.extractedText }],
       });
       setGapResult(result);
+      finishAiJob(true);
     } catch (error) {
       setGapError(error instanceof Error ? error.message : String(error));
+      finishAiJob(false);
     } finally {
       setGapLoading(false);
     }
@@ -180,14 +203,17 @@ export function NodeInspector({
     const items = topicItemsFor(topic);
     setSynthesisLoading(true);
     setSynthesisError(null);
+    setAiJob({ mode: 'synthesis', topic, count: Math.max(items.length, 1), done: false });
     try {
       const result = await synthesizeTopicWithAI({
         topic,
         items: items.length ? items : [{ title: node.title, distilledNote: mindNode.distilledNote, summary: mindNode.summary, extractedText: mindNode.extractedText }],
       });
       setSynthesisResult(result);
+      finishAiJob(true);
     } catch (error) {
       setSynthesisError(error instanceof Error ? error.message : String(error));
+      finishAiJob(false);
     } finally {
       setSynthesisLoading(false);
     }
@@ -622,6 +648,14 @@ export function NodeInspector({
               }
             />
           ))}
+          {aiJob && (
+            <AiProgressScreen
+              mode={aiJob.mode}
+              topic={aiJob.topic}
+              itemCount={aiJob.count}
+              done={aiJob.done}
+            />
+          )}
         </>,
         document.body,
       )}
