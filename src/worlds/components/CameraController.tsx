@@ -255,8 +255,6 @@ const STREAK_COUNT = 700;
  * the same at any zoom level.
  */
 function WarpStreaks({ signal }: { signal: { current: WarpSignal } }) {
-  const camera = useThree((state) => state.camera);
-
   const seeds = useMemo(() => {
     const data = new Float32Array(STREAK_COUNT * 4);
     for (let i = 0; i < STREAK_COUNT; i += 1) {
@@ -285,8 +283,30 @@ function WarpStreaks({ signal }: { signal: { current: WarpSignal } }) {
   useEffect(() => () => geometry.dispose(), [geometry]);
 
   const group = useRef<THREE.Group>(null);
+  const lines = useRef<THREE.LineSegments>(null);
   const travel = useRef(0);
   const tint = useMemo(() => new THREE.Color('#cfe0ff'), []);
+
+  // The tunnel lives in camera space, so its transform must be the camera's
+  // transform for the frame being drawn. Frame callbacks run before
+  // CameraController's own callback, and that is what moves the camera during
+  // a flight, so syncing there left the streaks a frame behind: they visibly
+  // trailed the camera while zooming in or out. onBeforeRender runs at draw
+  // time, once the camera has settled for this frame.
+  useEffect(() => {
+    const object = lines.current;
+    if (!object) return;
+    object.onBeforeRender = (_renderer, _scene, cam) => {
+      const tunnel = group.current;
+      if (!tunnel) return;
+      tunnel.position.copy(cam.position);
+      tunnel.quaternion.copy(cam.quaternion);
+      tunnel.updateMatrixWorld();
+    };
+    return () => {
+      object.onBeforeRender = () => {};
+    };
+  }, []);
 
   useFrame((_, rawDelta) => {
     const delta = Math.min(rawDelta, 1 / 20);
@@ -294,9 +314,6 @@ function WarpStreaks({ signal }: { signal: { current: WarpSignal } }) {
     if (!group.current) return;
     group.current.visible = intensity > 0.01;
     if (!group.current.visible) return;
-
-    group.current.position.copy(camera.position);
-    group.current.quaternion.copy(camera.quaternion);
 
     travel.current += delta * (0.4 + intensity * 2.2) * signal.current.direction;
     const positions = geometry.getAttribute('position') as THREE.BufferAttribute;
@@ -334,7 +351,13 @@ function WarpStreaks({ signal }: { signal: { current: WarpSignal } }) {
 
   return (
     <group ref={group} visible={false}>
-      <lineSegments geometry={geometry} frustumCulled={false} renderOrder={10} raycast={() => null}>
+      <lineSegments
+        ref={lines}
+        geometry={geometry}
+        frustumCulled={false}
+        renderOrder={10}
+        raycast={() => null}
+      >
         <lineBasicMaterial
           vertexColors
           transparent
