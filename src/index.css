@@ -231,6 +231,52 @@ canvas {
   }
 }
 
+/* --------------------------------------- file system & context menu (OLED) */
+.item-touch {
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.context-menu {
+  transform-origin: top left;
+  animation: context-menu-in 110ms ease-out;
+}
+
+.fs-enter {
+  animation: fs-enter 150ms ease-out both;
+}
+
+@keyframes context-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes fs-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-menu,
+  .fs-enter {
+    animation: none;
+  }
+}
+
 /* ------------------------------------------------- solar planet previews */
 .planet-preview {
   --planet-color: #94a3b8;

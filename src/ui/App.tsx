@@ -10,14 +10,21 @@ import { SolarPanel } from './components/SolarPanel';
 import { DocumentWindow } from './components/DocumentWindow';
 import { AiChat } from './components/AiChat';
 import { ImportPanel } from './components/ImportPanel';
+import { ViewSwitcher, type WorkspaceView } from './components/ViewSwitcher';
+import { FileSystemView, type FileSystemPath } from './components/FileSystemView';
+import { ItemContextMenu, type ItemContextAction } from './components/ItemContextMenu';
+import { AiMoveDialog, DeleteConfirmDialog, MoveItemDialog } from './components/ItemActionDialogs';
+import { useItemContextMenu } from './hooks/useItemContextMenu';
+import { describeTarget } from './targets';
 import { loadUserGalaxy, saveUserGalaxy } from '../lib/supabaseSync';
 import { useClusterNames } from './hooks/useClusterNames';
 import { loadClusterNames } from '../lib/clusterNames';
-import { searchWithAI, organizeBatchWithAI, type BatchOrganizeFile } from '../lib/ai';
+import { searchWithAI, chatWithAI, organizeBatchWithAI, type BatchOrganizeFile } from '../lib/ai';
 import { rankThoughts, type RankedThought } from './relevance';
 import { uploadFile } from '../lib/supabaseStorage';
 import { extractDocuments } from '../lib/extractText';
 import {
+  buildChatIndex,
   buildSolarSystem,
   entryKind,
   findPlanet,
@@ -25,12 +32,22 @@ import {
   locateMoon,
   planetKey,
   starNameOf,
+  targetFromMoon,
+  targetFromPlanet,
   type SolarPlanet,
   type SolarStar,
+  type SolarTarget,
 } from '../lib/solar';
-import { applyOrganizePlan, createMoon, ensurePlanet, ensureStar } from '../lib/organize';
+import {
+  applyOrganizePlan,
+  createMoon,
+  deleteSolarTarget,
+  ensurePlanet,
+  ensureStar,
+  moveSolarTarget,
+} from '../lib/organize';
 import { TopicGraph, type SolarFocusRequest } from '../worlds/TopicGraph';
-import { asItems, type MindItem } from './types';
+import { asItems, type AiBinding, type MindItem } from './types';
 
 type Reveal =
   | { kind: 'star'; star: string }
@@ -57,6 +74,24 @@ export default function App() {
   const pendingRevealRef = useRef<Reveal | null>(null);
   const revealTimerRef = useRef<number | null>(null);
   const focusTokenRef = useRef(0);
+
+  const [view, setView] = useState<WorkspaceView>(() =>
+    typeof window !== 'undefined' && window.localStorage.getItem('mindspace:view') === 'files'
+      ? 'files'
+      : 'galaxy',
+  );
+  const [filePath, setFilePath] = useState<FileSystemPath>({ star: null, planet: null });
+  const {
+    menu: contextMenuState,
+    bind: bindItemContext,
+    close: closeContextMenu,
+    open: openContextMenu,
+  } = useItemContextMenu();
+  const [moveTarget, setMoveTarget] = useState<SolarTarget | null>(null);
+  const [aiMoveTarget, setAiMoveTarget] = useState<SolarTarget | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<SolarTarget | null>(null);
+  const [aiBinding, setAiBinding] = useState<AiBinding | null>(null);
+  const aiBindingTokenRef = useRef(0);
 
   const [captureOpen, setCaptureOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -121,6 +156,31 @@ export default function App() {
     [],
   );
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mindspace:view', view);
+    } catch {
+      // Storage can be unavailable in private mode; the view still works in-session.
+    }
+  }, [view]);
+
+  useEffect(() => {
+    closeContextMenu();
+  }, [view, closeContextMenu]);
+
+  // Keep the file-system path valid after a delete or a cloud re-sync.
+  useEffect(() => {
+    setFilePath((current) => {
+      if (!current.star) return current;
+      const star = findStar(stars, current.star);
+      if (!star) return { star: null, planet: null };
+      if (current.planet && !star.planets.some((planet) => planet.name === current.planet)) {
+        return { star: current.star, planet: null };
+      }
+      return current;
+    });
+  }, [stars]);
+
   const openMoon = useCallback(
     (moon: MindItem) => {
       const location = locateMoon(stars, moon.id);
@@ -141,6 +201,20 @@ export default function App() {
     (node: ThoughtNode) => {
       const item = node as MindItem;
       const kind = entryKind(item);
+      if (view === 'files') {
+        if (kind === 'moon') {
+          const location = locateMoon(stars, item.id);
+          if (location) setFilePath({ star: location.star, planet: location.planet });
+          setActiveMoonId(item.id);
+          return;
+        }
+        if (kind === 'planet') {
+          setFilePath({ star: starNameOf(item), planet: item.title });
+          return;
+        }
+        setFilePath({ star: starNameOf(item), planet: null });
+        return;
+      }
       if (kind === 'planet') {
         const star = starNameOf(item);
         requestFocus(
@@ -165,7 +239,7 @@ export default function App() {
       const star = starNameOf(item);
       requestFocus({ kind: 'star', star }, { kind: 'star', star });
     },
-    [requestFocus, stars],
+    [requestFocus, stars, view],
   );
 
   const handleSelectStar = useCallback(
@@ -232,6 +306,156 @@ export default function App() {
     },
     [stars],
   );
+
+  /* ------------------------------------------------- context actions */
+
+  const performDelete = useCallback(async (target: SolarTarget) => {
+    setDeleteTarget(null);
+    try {
+      const removed = await deleteSolarTarget(target);
+      const removedMoonIds = new Set(target.items.map((moon) => moon.id));
+      setActiveMoonId((current) => (current && removedMoonIds.has(current) ? null : current));
+      setActiveStar((current) =>
+        target.kind === 'star' && current === target.star ? null : current,
+      );
+      setExpandedPlanet((current) =>
+        target.kind === 'star' || (target.kind === 'planet' && current === target.planet)
+          ? null
+          : current,
+      );
+      setSelectedPlanetKey((current) =>
+        target.kind === 'star' ||
+        (target.kind === 'planet' && current === planetKey(target.star, target.planet ?? ''))
+          ? null
+          : current,
+      );
+      setFilePath((current) => {
+        if (target.kind === 'star' && current.star === target.star) {
+          return { star: null, planet: null };
+        }
+        if (
+          target.kind === 'planet' &&
+          current.star === target.star &&
+          current.planet === target.planet
+        ) {
+          return { star: target.star, planet: null };
+        }
+        return current;
+      });
+      setSyncStatus(
+        removed > 1
+          ? `Deleted ${target.kind} “${target.title}” and ${removed - 1} nested item${
+              removed - 1 === 1 ? '' : 's'
+            }`
+          : `Deleted ${target.kind} “${target.title}”`,
+      );
+    } catch (error) {
+      console.error('Delete failed:', error);
+      setSyncStatus(`Delete failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, []);
+
+  const requestDelete = useCallback(
+    (target: SolarTarget) => {
+      // Moons and empty folders delete immediately; containers with children ask first.
+      if (target.kind === 'moon' || target.items.length === 0) {
+        void performDelete(target);
+        return;
+      }
+      setDeleteTarget(target);
+    },
+    [performDelete],
+  );
+
+  const handleContextAction = useCallback(
+    (action: ItemContextAction) => {
+      const target = contextMenuState?.target;
+      if (!target) return;
+      closeContextMenu();
+      if (action === 'ask') {
+        aiBindingTokenRef.current += 1;
+        setAiBinding({ ...describeTarget(target), token: aiBindingTokenRef.current });
+        return;
+      }
+      if (action === 'move') {
+        setMoveTarget(target);
+        return;
+      }
+      if (action === 'ai-move') {
+        setAiMoveTarget(target);
+        return;
+      }
+      requestDelete(target);
+    },
+    [closeContextMenu, contextMenuState, requestDelete],
+  );
+
+  const handleMoveItem = useCallback(
+    async (target: SolarTarget, destination: { star: SolarStar; planet: SolarPlanet }) => {
+      const result = await moveSolarTarget(target, destination);
+      setSyncStatus(
+        `Moved ${result.moved} moon${result.moved === 1 ? '' : 's'} to ${
+          destination.star.name
+        } › ${destination.planet.name}`,
+      );
+    },
+    [],
+  );
+
+  const handleAiMoveItem = useCallback(
+    async (target: SolarTarget, instruction: string): Promise<string> => {
+      const allowed = target.items.map((moon) => moon.id);
+      const context = describeTarget(target);
+      const result = await chatWithAI({
+        message: [
+          `Move or organize this ${target.kind} “${target.title}” (star: ${target.star}${
+            target.planet ? `, planet: ${target.planet}` : ''
+          }).`,
+          `Target node id: ${target.id ?? '(implicit folder)'} (${target.kind}).`,
+          `Only change these moon ids: ${allowed.join(', ') || '(none)'}.`,
+          `User instruction: ${instruction}`,
+        ].join('\n'),
+        history: [],
+        moon: {
+          title: context.title,
+          text: context.text,
+          status: context.status ?? 'ok',
+          note: context.note,
+        },
+        index: buildChatIndex(stars),
+      });
+
+      const allowedIds = new Set(allowed);
+      const planets = (result.planets ?? [])
+        .map((planet) => ({
+          name: planet.name,
+          moonIds: planet.item_ids.filter((id) => allowedIds.has(id)),
+        }))
+        .filter((planet) => planet.name.trim().length > 0 && planet.moonIds.length > 0);
+
+      if (planets.length === 0) {
+        return (
+          result.reply ||
+          'The AI did not suggest a destination. Try naming the star and planet you want.'
+        );
+      }
+
+      const applied = await applyOrganizePlan(
+        { starName: result.star_name, starColor: result.star_color, planets },
+        stars,
+      );
+      const summary = `Moved ${applied.moved} moon${
+        applied.moved === 1 ? '' : 's'
+      } into ${applied.planets.join(', ')} under ${applied.star}.`;
+      setSyncStatus(summary);
+      return [result.reply, summary].filter(Boolean).join('\n\n');
+    },
+    [stars],
+  );
+
+  const openDocument = useCallback((moon: MindItem) => {
+    setActiveMoonId(moon.id);
+  }, []);
 
   /* -------------------------------------------------------- cloud sync */
 
@@ -570,15 +794,24 @@ export default function App() {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') {
-        if (importOpen) setImportOpen(false);
-        else if (activeMoonId) setActiveMoonId(null);
-        else if (activeStar) setActiveStar(null);
-      }
+      if (event.key !== 'Escape') return;
+      // Overlays own Escape while open; don't clear panels underneath them.
+      if (moveTarget || aiMoveTarget || deleteTarget || contextMenuState) return;
+      if (importOpen) setImportOpen(false);
+      else if (activeMoonId) setActiveMoonId(null);
+      else if (activeStar) setActiveStar(null);
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeMoonId, activeStar, importOpen]);
+  }, [
+    activeMoonId,
+    activeStar,
+    importOpen,
+    moveTarget,
+    aiMoveTarget,
+    deleteTarget,
+    contextMenuState,
+  ]);
 
   const regionCounts = useMemo(() => {
     const counts = { prefrontal: 0, hippocampus: 0, limbic: 0, parietal: 0 } as Record<Region, number>;
@@ -601,6 +834,10 @@ export default function App() {
 
   /** Fly back to the galaxy-wide home view and clear what was open. */
   function recenter() {
+    if (view === 'files') {
+      setFilePath({ star: null, planet: null });
+      return;
+    }
     setActiveMoonId(null);
     setActiveStar(null);
     setSelectedPlanetKey(null);
@@ -620,7 +857,13 @@ export default function App() {
   return (
     <main className="relative h-[100dvh] w-full overflow-hidden bg-[#000000] text-zinc-100">
       <div className="absolute inset-x-0 top-0 z-30 flex flex-wrap items-center gap-2 bg-transparent px-3 py-2">
-        <div className="min-w-0 flex-1 basis-full sm:basis-auto">
+        <div className="order-1 shrink-0">
+          <ViewSwitcher value={view} onChange={setView} />
+        </div>
+        <div className="order-2 ml-auto shrink-0 sm:order-3">
+          <AuthPanel onUserChange={handleUserChange} status={syncStatus} />
+        </div>
+        <div className="order-3 min-w-0 basis-full sm:order-2 sm:flex-1 sm:basis-auto">
           <SearchPanel
             query={query}
             onQueryChange={setQuery}
@@ -636,13 +879,18 @@ export default function App() {
             aiReasons={aiReasons}
           />
         </div>
-        <div className="shrink-0">
-          <AuthPanel onUserChange={handleUserChange} status={syncStatus} />
-        </div>
       </div>
 
-      <section className="absolute inset-0 z-0 bg-black pt-16">
+      {/* Kept mounted while hidden so toggling back preserves the camera and
+          the galaxy buffers instead of rebuilding them. */}
+      <section
+        className={`absolute inset-0 z-0 bg-black pt-28 sm:pt-20 ${
+          view === 'galaxy' ? '' : 'invisible pointer-events-none'
+        }`}
+        aria-hidden={view !== 'galaxy'}
+      >
         <TopicGraph
+          active={view === 'galaxy'}
           items={items}
           focusRequest={focusRequest}
           onArrive={handleArrive}
@@ -651,8 +899,19 @@ export default function App() {
           onSelectStar={handleSelectStar}
           onSelectPlanet={handleSelectPlanet}
           onSelectMoon={handleSelectMoon}
+          onItemMenu={(target, point) => openContextMenu(target, point.x, point.y)}
         />
       </section>
+
+      {view === 'files' && (
+        <FileSystemView
+          stars={stars}
+          path={filePath}
+          onNavigate={setFilePath}
+          onOpenMoon={openDocument}
+          bindItem={bindItemContext}
+        />
+      )}
 
       {solarStar && (
         <SolarPanel
@@ -660,6 +919,7 @@ export default function App() {
           expandedPlanet={expandedPlanet}
           onTogglePlanet={togglePlanet}
           onOpenMoon={openMoon}
+          onDeletePlanet={(planet) => requestDelete(targetFromPlanet(planet))}
           onClose={() => {
             setActiveStar(null);
             setSelectedPlanetKey(null);
@@ -672,6 +932,7 @@ export default function App() {
           moon={activeMoon}
           star={activeMoonStar}
           planet={activeMoonPlanet}
+          onDelete={() => requestDelete(targetFromMoon(activeMoon, activeMoonPlanet))}
           onClose={() => setActiveMoonId(null)}
         />
       )}
@@ -679,6 +940,7 @@ export default function App() {
       <AiChat
         stars={stars}
         activeMoon={activeMoon}
+        binding={aiBinding}
         onFocusMoon={handleFocusMoonId}
         onOrganize={handleOrganize}
       />
@@ -733,6 +995,39 @@ export default function App() {
             if (importBusy) return;
             setImportOpen(false);
           }}
+        />
+      )}
+
+      {contextMenuState && (
+        <ItemContextMenu
+          state={contextMenuState}
+          onAction={handleContextAction}
+          onClose={closeContextMenu}
+        />
+      )}
+
+      {moveTarget && (
+        <MoveItemDialog
+          target={moveTarget}
+          stars={stars}
+          onClose={() => setMoveTarget(null)}
+          onSubmit={(destination) => handleMoveItem(moveTarget, destination)}
+        />
+      )}
+
+      {aiMoveTarget && (
+        <AiMoveDialog
+          target={aiMoveTarget}
+          onClose={() => setAiMoveTarget(null)}
+          onSubmit={(instruction) => handleAiMoveItem(aiMoveTarget, instruction)}
+        />
+      )}
+
+      {deleteTarget && (
+        <DeleteConfirmDialog
+          target={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={() => performDelete(deleteTarget)}
         />
       )}
     </main>

@@ -1,3 +1,4 @@
+import type { DocumentExtractionStatus } from '../core/types';
 import type { MindItem } from '../ui/types';
 
 /**
@@ -202,4 +203,112 @@ export function locateMoon(stars: SolarStar[], moonId: string): MoonLocation | n
 
 export function moonCount(stars: SolarStar[]): number {
   return stars.reduce((total, star) => total + star.moonCount, 0);
+}
+
+/* ------------------------------------------------------------- targets */
+
+/** Which level of the Star → Planet → Moon hierarchy an action applies to. */
+export type SolarTargetKind = 'star' | 'planet' | 'moon';
+
+/**
+ * A view-agnostic selection. Both the 3D galaxy and the file system hand the
+ * same shape to the context menu, dialogs and AI tools, so an action behaves
+ * identically no matter where it was invoked.
+ */
+export interface SolarTarget {
+  kind: SolarTargetKind;
+  /** Star (topic) name. */
+  star: string;
+  starColor: string;
+  /** Planet (unit) name for planets and moons. */
+  planet?: string;
+  planetColor?: string;
+  /** Node id of the star/planet/moon, or null when the container is implicit. */
+  id: string | null;
+  title: string;
+  color: string;
+  /** Moons this target contains (exactly one for a moon). */
+  items: MindItem[];
+}
+
+export function targetFromStar(star: SolarStar): SolarTarget {
+  return {
+    kind: 'star',
+    star: star.name,
+    starColor: star.color,
+    id: star.id,
+    title: star.name,
+    color: star.color,
+    items: star.planets.flatMap((planet) => planet.moons),
+  };
+}
+
+export function targetFromPlanet(planet: SolarPlanet): SolarTarget {
+  return {
+    kind: 'planet',
+    star: planet.star,
+    starColor: planet.color,
+    planet: planet.name,
+    planetColor: planet.color,
+    id: planet.id,
+    title: planet.name,
+    color: planet.color,
+    items: planet.moons,
+  };
+}
+
+export function targetFromMoon(moon: MindItem, fallbackPlanet?: SolarPlanet | null): SolarTarget {
+  const star = moon.topic?.trim() || starNameOf(moon);
+  const unit = moon.unit?.trim() || fallbackPlanet?.name || unitNameOf(moon);
+  const color = moon.topicColor || fallbackPlanet?.color || DEFAULT_STAR_COLOR;
+  return {
+    kind: 'moon',
+    star,
+    starColor: color,
+    planet: unit,
+    planetColor: fallbackPlanet?.color || color,
+    id: moon.id,
+    title: moon.title,
+    color,
+    items: [moon],
+  };
+}
+
+export function targetKindLabel(kind: SolarTargetKind): string {
+  if (kind === 'star') return 'Star';
+  if (kind === 'planet') return 'Planet';
+  return 'Moon';
+}
+
+/** Breadcrumb-style path shown in menus and dialogs. */
+export function targetPath(target: SolarTarget): string {
+  if (target.kind === 'star') return 'Galaxy Root';
+  if (target.kind === 'planet') return `Galaxy Root / ${target.star}`;
+  return `Galaxy Root / ${target.star} / ${target.planet ?? UNFILED_PLANET}`;
+}
+
+/** Compact moon index shared by the AI chat and the AI move action. */
+export function buildChatIndex(
+  stars: SolarStar[],
+  limit = 120,
+): Array<{
+  id: string;
+  title: string;
+  star: string;
+  planet: string;
+  status: DocumentExtractionStatus;
+}> {
+  return stars
+    .flatMap((star) =>
+      star.planets.flatMap((planet) =>
+        planet.moons.map((moon) => ({
+          id: moon.id,
+          title: moon.title,
+          star: star.name,
+          planet: planet.name,
+          status: moon.extractionStatus ?? ('ok' as const),
+        })),
+      ),
+    )
+    .slice(0, limit);
 }

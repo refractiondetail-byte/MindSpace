@@ -7,11 +7,13 @@ import type { SolarPlanet, SolarStar } from '../../lib/solar';
 import type { MindItem } from '../types';
 import { formatBytes } from '../format';
 import { FloatingWindow } from './FloatingWindow';
+import { TrashIcon } from './SolarGlyphs';
 
 interface DocumentWindowProps {
   moon: MindItem;
   star: SolarStar | null;
   planet: SolarPlanet | null;
+  onDelete: () => void;
   onClose: () => void;
 }
 
@@ -111,7 +113,7 @@ function PdfPages({ blob }: { blob: Blob }) {
  * notice when no text exists). Drag, minimize and maximize come from
  * FloatingWindow.
  */
-export function DocumentWindow({ moon, star, planet, onClose }: DocumentWindowProps) {
+export function DocumentWindow({ moon, star, planet, onDelete, onClose }: DocumentWindowProps) {
   const attachment = moon.attachments[0] ?? null;
   const blob = useLiveQuery(
     () => (attachment ? getAttachmentBlob(attachment.id) : Promise.resolve(undefined)),
@@ -150,15 +152,26 @@ export function DocumentWindow({ moon, star, planet, onClose }: DocumentWindowPr
           <span className={status.tone}>{status.text}</span>
           {moon.textChars ? <span>· {moon.textChars.toLocaleString()} chars</span> : null}
           {moon.extractionNote ? <span className="min-w-0 truncate">· {moon.extractionNote}</span> : null}
-          {url && attachment && (
-            <a
-              href={url}
-              download={attachment.name}
-              className="ml-auto rounded-md border border-white/10 px-2 py-0.5 text-[10px] text-slate-300 hover:text-white"
+          <div className="ml-auto flex items-center gap-2">
+            {url && attachment && (
+              <a
+                href={url}
+                download={attachment.name}
+                className="rounded-md border border-white/10 px-2 py-0.5 text-[10px] text-slate-300 hover:text-white"
+              >
+                Download
+              </a>
+            )}
+            <button
+              type="button"
+              onClick={onDelete}
+              title={`Delete ${moon.title}`}
+              className="inline-flex items-center gap-1 rounded-md border border-[#1A1A1A] px-2 py-0.5 text-[10px] text-zinc-400 transition hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-200"
             >
-              Download
-            </a>
-          )}
+              <TrashIcon className="h-3 w-3" />
+              Delete
+            </button>
+          </div>
         </div>
       }
     >

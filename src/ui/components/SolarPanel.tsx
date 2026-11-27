@@ -2,12 +2,14 @@ import type { SolarPlanet, SolarStar } from '../../lib/solar';
 import type { MindItem } from '../types';
 import { FloatingWindow } from './FloatingWindow';
 import { PlanetPreview } from './PlanetPreview';
+import { TrashIcon } from './SolarGlyphs';
 
 interface SolarPanelProps {
   star: SolarStar;
   expandedPlanet: string | null;
   onTogglePlanet: (planet: SolarPlanet) => void;
   onOpenMoon: (moon: MindItem) => void;
+  onDeletePlanet: (planet: SolarPlanet) => void;
   onClose: () => void;
 }
 
@@ -51,6 +53,7 @@ export function SolarPanel({
   expandedPlanet,
   onTogglePlanet,
   onOpenMoon,
+  onDeletePlanet,
   onClose,
 }: SolarPanelProps) {
   return (
@@ -105,6 +108,20 @@ export function SolarPanel({
 
                 {expanded && (
                   <div className="border-t border-white/10 p-2">
+                    <div className="mb-1 flex items-center justify-between gap-2 px-1">
+                      <span className="text-[9px] uppercase tracking-[0.18em] text-slate-500">
+                        Planet actions
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => onDeletePlanet(planet)}
+                        title={`Delete ${planet.name}`}
+                        className="inline-flex items-center gap-1 rounded-md border border-[#1A1A1A] px-2 py-1 text-[10px] text-zinc-400 transition hover:border-rose-500/40 hover:bg-rose-500/10 hover:text-rose-200"
+                      >
+                        <TrashIcon className="h-3 w-3" />
+                        Delete
+                      </button>
+                    </div>
                     {planet.moons.length === 0 ? (
                       <p className="px-1 py-2 text-[11px] text-slate-500">
                         No moons yet — import a file for this unit.

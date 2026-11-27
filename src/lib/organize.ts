@@ -1,5 +1,5 @@
 import { db } from '../core/db';
-import { createThought, updateThought } from '../core/repository';
+import { createThought, deleteThought, updateThought } from '../core/repository';
 import type {
   Attachment,
   DocumentExtractionStatus,
@@ -7,7 +7,16 @@ import type {
   ThoughtNode,
 } from '../core/types';
 import type { MindItem } from '../ui/types';
-import { DEFAULT_STAR_COLOR, type SolarPlanet, type SolarStar } from './solar';
+import {
+  DEFAULT_STAR_COLOR,
+  entryKind,
+  starNameOf,
+  unitNameOf,
+  UNFILED_PLANET,
+  type SolarPlanet,
+  type SolarStar,
+  type SolarTarget,
+} from './solar';
 
 /** Persist extra solar fields alongside the core ThoughtNode shape. */
 export async function saveItem(item: MindItem): Promise<void> {
@@ -201,4 +210,156 @@ export async function applyOrganizePlan(
   }
 
   return { star: starName, planets: created, moved };
+}
+
+/* ------------------------------------------------------- move & delete */
+
+export interface MoveTargetResult {
+  moved: number;
+  /** Emptied source planets/stars that were removed after the move. */
+  removedContainers: number;
+}
+
+/**
+ * Relocate everything a target contains into one destination planet. Stars and
+ * planets cannot nest, so moving a folder merges its moons into the chosen
+ * unit; an emptied source folder is then removed from both views.
+ */
+export async function moveSolarTarget(
+  target: SolarTarget,
+  destination: { star: SolarStar; planet: SolarPlanet },
+): Promise<MoveTargetResult> {
+  const destinationStar = destination.star;
+  const destinationPlanet = destination.planet;
+  const starNode = await ensureStar({
+    name: destinationStar.name,
+    color: destinationStar.color,
+    existing: destinationStar,
+  });
+  const starShape = {
+    name: destinationStar.name,
+    color: starNode.topicColor || destinationStar.color || DEFAULT_STAR_COLOR,
+    id: starNode.id,
+  };
+  const planetNode = await ensurePlanet({
+    star: starShape,
+    name: destinationPlanet.name,
+    color: destinationPlanet.color,
+    existing: destinationPlanet,
+  });
+
+  const starName = destinationStar.name;
+  const unitName = destinationPlanet.name;
+  let moved = 0;
+
+  for (const moon of target.items) {
+    // eslint-disable-next-line no-await-in-loop
+    const node = (await db.thoughts.get(moon.id)) as MindItem | undefined;
+    if (!node || entryKind(node) !== 'moon') continue;
+    // eslint-disable-next-line no-await-in-loop
+    await updateThought(moon.id, {
+      topic: starName,
+      topicColor: starShape.color,
+      unit: unitName,
+      entryType: 'moon',
+      parentId: planetNode.id,
+      tags: [...new Set([starName, unitName, ...(node.tags ?? [])])],
+    });
+    moved += 1;
+  }
+
+  let removedContainers = 0;
+  if (target.kind !== 'moon') {
+    // Re-read after the writes so the emptiness check is accurate.
+    const nodes = (await db.thoughts.toArray()) as MindItem[];
+
+    if (target.kind === 'star' && target.star !== starName) {
+      const stillHasMoons = nodes.some(
+        (node) => entryKind(node) === 'moon' && starNameOf(node) === target.star,
+      );
+      if (!stillHasMoons) {
+        for (const node of nodes) {
+          const kind = entryKind(node);
+          const isOldPlanet = kind === 'planet' && starNameOf(node) === target.star;
+          const isOldStar =
+            kind === 'star' &&
+            (node.id === target.id ||
+              node.topic?.trim() === target.star ||
+              node.title.trim() === target.star);
+          if ((!isOldPlanet && !isOldStar) || node.id === starNode.id) continue;
+          // eslint-disable-next-line no-await-in-loop
+          await deleteThought(node.id);
+          removedContainers += 1;
+        }
+      }
+    }
+
+    if (target.kind === 'planet' && !(target.star === starName && target.planet === unitName)) {
+      const sourceUnit = target.planet ?? UNFILED_PLANET;
+      const stillHasMoons = nodes.some(
+        (node) =>
+          entryKind(node) === 'moon' &&
+          starNameOf(node) === target.star &&
+          unitNameOf(node) === sourceUnit,
+      );
+      const emptiedPlanet = nodes.find(
+        (node) =>
+          entryKind(node) === 'planet' &&
+          (node.id === target.id ||
+            (starNameOf(node) === target.star && node.title.trim() === (target.planet ?? ''))),
+      );
+      if (!stillHasMoons && emptiedPlanet) {
+        await deleteThought(emptiedPlanet.id);
+        removedContainers += 1;
+      }
+    }
+  }
+
+  return { moved, removedContainers };
+}
+
+/**
+ * Delete a Star, Planet or Moon and everything beneath it. IndexedDB is the
+ * single source of truth, so the galaxy and file system both update when the
+ * live query re-runs; cloud sync picks the change up from the same list.
+ */
+export async function deleteSolarTarget(target: SolarTarget): Promise<number> {
+  const nodes = (await db.thoughts.toArray()) as MindItem[];
+  const ids = new Set<string>();
+  for (const moon of target.items) ids.add(moon.id);
+
+  if (target.kind !== 'moon') {
+    for (const node of nodes) {
+      const kind = entryKind(node);
+      if (target.kind === 'star') {
+        if (kind === 'planet' && starNameOf(node) === target.star) ids.add(node.id);
+        if (
+          kind === 'star' &&
+          (node.id === target.id ||
+            node.topic?.trim() === target.star ||
+            node.title.trim() === target.star)
+        ) {
+          ids.add(node.id);
+        }
+        continue;
+      }
+      if (
+        kind === 'planet' &&
+        (node.id === target.id ||
+          (starNameOf(node) === target.star && node.title.trim() === (target.planet ?? '')))
+      ) {
+        ids.add(node.id);
+      }
+    }
+  }
+
+  const existing = new Set(nodes.map((node) => node.id));
+  let removed = 0;
+  for (const id of ids) {
+    if (!existing.has(id)) continue;
+    // eslint-disable-next-line no-await-in-loop
+    await deleteThought(id);
+    removed += 1;
+  }
+  return removed;
 }

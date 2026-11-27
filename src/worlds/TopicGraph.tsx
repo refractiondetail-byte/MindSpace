@@ -5,13 +5,23 @@ import { CameraController, type CameraFocus } from './components/CameraControlle
 import * as THREE from 'three';
 import type { MindItem } from '../ui/types';
 import type { Region } from '../core/types';
-import { buildSolarSystem, planetKey, type SolarPlanet, type SolarStar } from '../lib/solar';
+import {
+  buildSolarSystem,
+  planetKey,
+  targetFromMoon,
+  targetFromPlanet,
+  targetFromStar,
+  type SolarPlanet,
+  type SolarStar,
+  type SolarTarget,
+} from '../lib/solar';
 import { StarNode } from './components/StarNode';
 import { DeepStarfield } from './components/DeepStarfield';
 import { buildDeepStarfieldData, DEEP_STARFIELD } from './components/deepStarData';
 import { StarWarp, selectWarpStars } from './components/StarWarp';
 import { BlackHole } from './components/BlackHole';
 import { MilkyWay, milkyWayArmPoint, buildMilkyWayStars } from './components/MilkyWay';
+import { useItemLongPress } from './components/useItemLongPress';
 
 interface StarCluster {
   star: SolarStar;
@@ -178,13 +188,18 @@ function TopicHub({
   cluster,
   registerRef,
   onSelect,
+  onItemMenu,
 }: {
   cluster: StarCluster;
   registerRef: (id: string, obj: THREE.Object3D | null) => void;
   onSelect: (name: string) => void;
+  onItemMenu?: (target: SolarTarget, point: { x: number; y: number }) => void;
 }) {
   const ref = useRef<THREE.Group>(null);
   const starId = `star:${cluster.star.name}`;
+  const longPress = useItemLongPress((x, y) =>
+    onItemMenu?.(targetFromStar(cluster.star), { x, y }),
+  );
 
   useEffect(() => {
     if (ref.current) registerRef(starId, ref.current);
@@ -206,8 +221,21 @@ function TopicHub({
       <mesh
         onClick={(event) => {
           event.stopPropagation();
+          if (longPress.consumeClick()) return;
           onSelect(cluster.star.name);
         }}
+        onContextMenu={(event) => {
+          event.stopPropagation();
+          event.nativeEvent.preventDefault();
+          onItemMenu?.(targetFromStar(cluster.star), {
+            x: event.nativeEvent.clientX,
+            y: event.nativeEvent.clientY,
+          });
+        }}
+        onPointerDown={longPress.onPointerDown}
+        onPointerUp={longPress.onPointerUp}
+        onPointerCancel={longPress.onPointerCancel}
+        onPointerLeave={longPress.onPointerLeave}
         onPointerOver={() => {
           document.body.style.cursor = 'pointer';
         }}
@@ -244,6 +272,7 @@ function DocumentMoon({
   registerRef,
   onHover,
   onSelect,
+  onItemMenu,
 }: {
   moon: MindItem;
   index: number;
@@ -253,6 +282,7 @@ function DocumentMoon({
   registerRef: (id: string, obj: THREE.Object3D | null) => void;
   onHover: (id: string | null) => void;
   onSelect: (id: string) => void;
+  onItemMenu?: (target: SolarTarget, point: { x: number; y: number }) => void;
 }) {
   const ref = useRef<THREE.Group>(null);
   const meshRef = useRef<THREE.Mesh>(null);
@@ -260,6 +290,9 @@ function DocumentMoon({
   // World-space anchor: filaments and the camera read `.position`, but this
   // group's own position is local to its orbiting planet.
   const anchor = useMemo(() => new THREE.Object3D(), []);
+  const longPress = useItemLongPress((x, y) =>
+    onItemMenu?.(targetFromMoon(moon), { x, y }),
+  );
 
   useEffect(() => {
     registerRef(moon.id, anchor);
@@ -302,8 +335,21 @@ function DocumentMoon({
         ref={meshRef}
         onClick={(event) => {
           event.stopPropagation();
+          if (longPress.consumeClick()) return;
           onSelect(moon.id);
         }}
+        onContextMenu={(event) => {
+          event.stopPropagation();
+          event.nativeEvent.preventDefault();
+          onItemMenu?.(targetFromMoon(moon), {
+            x: event.nativeEvent.clientX,
+            y: event.nativeEvent.clientY,
+          });
+        }}
+        onPointerDown={longPress.onPointerDown}
+        onPointerUp={longPress.onPointerUp}
+        onPointerCancel={longPress.onPointerCancel}
+        onPointerLeave={longPress.onPointerLeave}
         onPointerOver={(event) => {
           event.stopPropagation();
           onHover(moon.id);
@@ -379,6 +425,8 @@ function Planet({
   onHoverMoon,
   onSelectMoon,
   onSelectPlanet,
+  menuTarget,
+  onItemMenu,
 }: {
   item: MindItem;
   moons: MindItem[];
@@ -394,12 +442,15 @@ function Planet({
   onHoverMoon: (id: string | null) => void;
   onSelectMoon: (id: string) => void;
   onSelectPlanet: () => void;
+  menuTarget: SolarTarget;
+  onItemMenu?: (target: SolarTarget, point: { x: number; y: number }) => void;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const orbitGroupRef = useRef<THREE.Group>(null);
   const meshRef = useRef<THREE.Mesh>(null);
   const materialRef = useRef<any>(null);
   const timeRef = useRef(0);
+  const longPress = useItemLongPress((x, y) => onItemMenu?.(menuTarget, { x, y }));
 
   const params = useMemo(() => {
     const random = mulberry32(hashValue(item.id));
@@ -576,8 +627,21 @@ function Planet({
         ref={meshRef}
         onClick={(event) => {
           event.stopPropagation();
+          if (longPress.consumeClick()) return;
           onSelectPlanet();
         }}
+        onContextMenu={(event) => {
+          event.stopPropagation();
+          event.nativeEvent.preventDefault();
+          onItemMenu?.(menuTarget, {
+            x: event.nativeEvent.clientX,
+            y: event.nativeEvent.clientY,
+          });
+        }}
+        onPointerDown={longPress.onPointerDown}
+        onPointerUp={longPress.onPointerUp}
+        onPointerCancel={longPress.onPointerCancel}
+        onPointerLeave={longPress.onPointerLeave}
         onPointerOver={(event) => {
           event.stopPropagation();
           onHover(focusKey);
@@ -609,6 +673,7 @@ function Planet({
           registerRef={registerRef}
           onHover={onHoverMoon}
           onSelect={onSelectMoon}
+          onItemMenu={onItemMenu}
         />
       ))}
       {(hovered || selected) && (
@@ -1094,15 +1159,20 @@ export function TopicGraph({
   onSelectStar,
   onSelectPlanet,
   onSelectMoon,
+  onItemMenu,
+  active = true,
 }: {
   items: MindItem[];
   focusRequest: SolarFocusRequest | null;
+  /** False while another workspace view covers the galaxy: pause rendering. */
+  active?: boolean;
   onArrive?: () => void;
   selectedMoonId: string | null;
   selectedPlanetKey: string | null;
   onSelectStar: (name: string) => void;
   onSelectPlanet: (star: string, planet: string) => void;
   onSelectMoon: (id: string) => void;
+  onItemMenu?: (target: SolarTarget, point: { x: number; y: number }) => void;
 }) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [hoveredPlanetKey, setHoveredPlanetKey] = useState<string | null>(null);
@@ -1298,6 +1368,7 @@ export function TopicGraph({
     <Canvas
       camera={{ position: [0, 1250, 1450], fov: 52, near: 0.05, far: 40000 }}
       style={{ position: 'absolute', inset: 0, background: '#000000' }}
+      frameloop={active ? 'always' : 'never'}
       // Every layer here is additive glow that already multiplies by uDpr, so
       // the 2x cap costs no visible clarity while halving fill on 3x panels.
       dpr={[1, 2]}
@@ -1321,7 +1392,12 @@ export function TopicGraph({
       </group>
       {clusters.map((cluster) => (
         <group key={cluster.star.name}>
-          <TopicHub cluster={cluster} registerRef={registerRef} onSelect={onSelectStar} />
+          <TopicHub
+            cluster={cluster}
+            registerRef={registerRef}
+            onSelect={onSelectStar}
+            onItemMenu={onItemMenu}
+          />
           {cluster.star.planets.map((planet) => (
             <Planet
               key={planet.key}
@@ -1342,6 +1418,8 @@ export function TopicGraph({
               onHoverMoon={setHoveredId}
               onSelectMoon={onSelectMoon}
               onSelectPlanet={() => onSelectPlanet(cluster.star.name, planet.name)}
+              menuTarget={targetFromPlanet(planet)}
+              onItemMenu={onItemMenu}
             />
           ))}
         </group>

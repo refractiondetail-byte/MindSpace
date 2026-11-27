@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { chatWithAI, type ChatTurn } from '../../lib/ai';
-import type { SolarStar } from '../../lib/solar';
-import type { MindItem } from '../types';
+import { buildChatIndex, type SolarStar } from '../../lib/solar';
+import type { AiBinding, MindItem } from '../types';
 
 interface AiChatProps {
   stars: SolarStar[];
   activeMoon: MindItem | null;
+  /** Selection passed in from a context menu's "Ask AI About This". */
+  binding?: AiBinding | null;
   onFocusMoon: (moonId: string) => void;
   onOrganize: (plan: {
     starName?: string;
@@ -36,7 +38,7 @@ const SUGGESTIONS = [
  * organize the library. Grounding text is sent explicitly; when a moon has no
  * extracted text the server is told to say so rather than invent it.
  */
-export function AiChat({ stars, activeMoon, onFocusMoon, onOrganize }: AiChatProps) {
+export function AiChat({ stars, activeMoon, binding, onFocusMoon, onOrganize }: AiChatProps) {
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -58,6 +60,18 @@ export function AiChat({ stars, activeMoon, onFocusMoon, onOrganize }: AiChatPro
     if (node) node.scrollTop = node.scrollHeight;
   }, [messages, open]);
 
+  // A context-menu request opens the drawer once and leaves its context bound.
+  useEffect(() => {
+    if (!binding) return;
+    setOpen(true);
+    setError(null);
+    setMessages((current) => [
+      ...current,
+      { id: makeId(), role: 'note', content: `Context attached: ${binding.label}` },
+    ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [binding?.token]);
+
   async function send(text: string) {
     const message = text.trim();
     if (!message || busy) return;
@@ -72,32 +86,28 @@ export function AiChat({ stars, activeMoon, onFocusMoon, onOrganize }: AiChatPro
       .slice(-8)
       .map((entry) => ({ role: entry.role === 'user' ? 'user' : 'assistant', content: entry.content }));
 
-    const index = stars
-      .flatMap((star) =>
-        star.planets.flatMap((planet) =>
-          planet.moons.map((moon) => ({
-            id: moon.id,
-            title: moon.title,
-            star: star.name,
-            planet: planet.name,
-            status: moon.extractionStatus ?? ('ok' as const),
-          })),
-        ),
-      )
-      .slice(0, 120);
+    const index = buildChatIndex(stars);
+    const context = binding
+      ? {
+          title: binding.title,
+          text: binding.text,
+          status: binding.status ?? 'ok',
+          note: binding.note,
+        }
+      : activeMoon
+        ? {
+            title: activeMoon.title,
+            text: activeMoon.extractedText,
+            status: activeMoon.extractionStatus ?? 'ok',
+            note: activeMoon.extractionNote,
+          }
+        : null;
 
     try {
       const result = await chatWithAI({
         message,
         history,
-        moon: activeMoon
-          ? {
-              title: activeMoon.title,
-              text: activeMoon.extractedText,
-              status: activeMoon.extractionStatus ?? 'ok',
-              note: activeMoon.extractionNote,
-            }
-          : null,
+        moon: context,
         index,
       });
       if (requestId !== requestRef.current) return;
@@ -133,11 +143,13 @@ export function AiChat({ stars, activeMoon, onFocusMoon, onOrganize }: AiChatPro
     }
   }
 
-  const contextLabel = activeMoon
-    ? activeMoon.extractionStatus && activeMoon.extractionStatus !== 'ok'
-      ? `${activeMoon.title} · no extractable text`
-      : activeMoon.title
-    : 'Whole solar system';
+  const contextLabel = binding?.label
+    ? binding.label
+    : activeMoon
+      ? activeMoon.extractionStatus && activeMoon.extractionStatus !== 'ok'
+        ? `${activeMoon.title} · no extractable text`
+        : activeMoon.title
+      : 'Whole solar system';
 
   if (!open) {
     return (
@@ -227,7 +239,13 @@ export function AiChat({ stars, activeMoon, onFocusMoon, onOrganize }: AiChatPro
         <input
           value={input}
           onChange={(event) => setInput(event.target.value)}
-          placeholder={activeMoon ? 'Ask about this document…' : 'Ask or organize…'}
+          placeholder={
+            binding
+              ? 'Ask about this selection…'
+              : activeMoon
+                ? 'Ask about this document…'
+                : 'Ask or organize…'
+          }
           className="field !rounded-xl !px-2.5 !py-1.5 !text-[11px]"
         />
         <button

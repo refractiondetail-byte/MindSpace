@@ -3,6 +3,20 @@ import type { DocumentExtractionStatus, SolarRole, ThoughtNode } from '../core/t
 /** Solar role of the node; `attachment` is the legacy pre-hierarchy label. */
 export type EntryType = SolarRole;
 
+/**
+ * Context handed to the assistant when a Star, Planet or Moon is sent to chat.
+ * The `token` lets the chat open itself exactly once per request.
+ */
+export interface AiBinding {
+  token: number;
+  /** Short header label, e.g. `★ Calculus II · 12 moons`. */
+  label: string;
+  title: string;
+  text?: string;
+  status?: DocumentExtractionStatus;
+  note?: string;
+}
+
 export interface MindItem extends ThoughtNode {
   /** Star (topic) name this node belongs to. */
   topic?: string;
