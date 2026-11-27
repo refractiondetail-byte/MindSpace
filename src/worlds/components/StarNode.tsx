@@ -43,7 +43,10 @@ const FRAGMENT = /* glsl */ `
     float r = radius / asymmetry;
 
     float twinkle = 0.9 + 0.1 * sin(uTime * (0.35 + uSeed * 0.5) + uSeed * 31.0);
-    float core = exp(-pow(r / (0.075 * uCoreSize), 2.0) * 1.8);
+    // pow(x, 2.0) is exactly x * x: multiplying by the reciprocal radius keeps
+    // the same gaussian without the transcendental.
+    float coreD = r / (0.075 * uCoreSize);
+    float core = exp(-coreD * coreD * 1.8);
     float inner = exp(-r * 15.0) * 0.5;
     float corona = exp(-r * 6.0) * 0.13 + exp(-r * 2.8) * 0.045;
 
@@ -52,14 +55,22 @@ const FRAGMENT = /* glsl */ `
     float spikeY = exp(-abs(p.x) * 190.0) * exp(-abs(p.y) * 3.6);
 
     // Camera-facing focus rings stay crisp even when the star is pin-sharp.
-    float selectedRing =
-      exp(-pow((r - 0.56) / 0.008, 2.0)) * uSelected;
-    float hoverRing =
-      exp(-pow((r - 0.56) / 0.006, 2.0)) * uHover * 0.35;
-    float emphasisRing =
-      exp(-pow((r - (0.76 + 0.015 * sin(uTime * 2.0 + uSeed * 8.0))) / 0.01, 2.0)) *
-      uEmphasis;
-    float rings = selectedRing * 0.75 + hoverRing * 0.5 + emphasisRing * 0.55;
+    // A star billboard covers most of the viewport at close range, so the ring
+    // gaussians are gated on their uniforms: only the one star that is
+    // selected/hovered/emphasised pays for them.
+    float rings = 0.0;
+    if (uSelected > 0.001) {
+      float sd = (r - 0.56) * 125.0;
+      rings += exp(-sd * sd) * uSelected * 0.75;
+    }
+    if (uHover > 0.001) {
+      float hd = (r - 0.56) * 166.667;
+      rings += exp(-hd * hd) * uHover * 0.175;
+    }
+    if (uEmphasis > 0.001) {
+      float ed = (r - (0.76 + 0.015 * sin(uTime * 2.0 + uSeed * 8.0))) * 100.0;
+      rings += exp(-ed * ed) * uEmphasis * 0.55;
+    }
 
     vec3 color = mix(
       uHaloColor,

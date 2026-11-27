@@ -52,16 +52,6 @@ export function OrbitalArcs() {
     () => ARCS.map((arc) => arcGeometry(arc.radius, arc.span)),
     [],
   );
-  const glowMaterials = useMemo(() => ARCS.map(() => {
-    const material = new THREE.LineBasicMaterial({
-      color: '#fff4dc',
-      transparent: true,
-      opacity: 0,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    return material;
-  }), []);
   const glowMaterialRefs = useRef<Array<THREE.LineBasicMaterial | null>>([]);
   const timeRef = useRef(0);
   useFrame((_, delta) => {
@@ -69,15 +59,10 @@ export function OrbitalArcs() {
     const time = timeRef.current;
     groups.current.forEach((group, index) => {
       if (!group) return;
-      const arc = ARCS[index];
-      group.rotation.y = arc.offset + time * arc.speed;
-
-      const glow = glowMaterials[index];
-      if (!glow) return;
-      const pulse = 0.5 + 0.5 * Math.sin(time * (arc.pulseSpeed ?? 0.5) + index * 1.3);
-      glow.opacity = arc.opacity * pulse * pulse * 0.9;
+      group.rotation.y = ARCS[index].offset + time * ARCS[index].speed;
     });
 
+    // Only the halo material mounted on each arc's second line pass pulses.
     glowMaterialRefs.current.forEach((glow, glowIndex) => {
       if (!glow) return;
       const arc = ARCS[glowIndex];
@@ -159,6 +144,9 @@ function Streak({ spec }: { spec: StreakSpec }) {
     () => new THREE.Vector3(...spec.direction).normalize(),
     [spec.direction],
   );
+  // Scratch endpoints: reused every frame instead of cloned twice per streak.
+  const head = useMemo(() => new THREE.Vector3(), []);
+  const tail = useMemo(() => new THREE.Vector3(), []);
 
   useEffect(() => () => geometry.dispose(), [geometry]);
 
@@ -173,10 +161,8 @@ function Streak({ spec }: { spec: StreakSpec }) {
       ? Math.sin(progress * Math.PI) * spec.strength
       : 0;
 
-    const head = start.clone().addScaledVector(direction, progress * spec.travel);
-    const tail = head
-      .clone()
-      .addScaledVector(direction, -spec.length * (0.35 + progress * 0.65));
+    head.copy(start).addScaledVector(direction, progress * spec.travel);
+    tail.copy(head).addScaledVector(direction, -spec.length * (0.35 + progress * 0.65));
 
     const positions = geometry.getAttribute('position') as THREE.BufferAttribute;
     positions.setXYZ(0, head.x, head.y, head.z);

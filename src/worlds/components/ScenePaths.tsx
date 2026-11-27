@@ -285,7 +285,17 @@ export function ScenePaths({
     geometry.setAttribute('aStrength', new THREE.BufferAttribute(strengths, 1));
     geometry.setAttribute('aVariation', new THREE.BufferAttribute(variations, 1));
     geometry.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
-    geometry.setAttribute('aSkeleton', new THREE.BufferAttribute(new Float32Array(visible.length * 9), 3).setUsage(THREE.DynamicDrawUsage));
+    // The edge anchors are fixed scene coordinates, so the packet skeleton is
+    // uploaded once here instead of being rewritten (and re-uploaded) every
+    // frame with identical values.
+    const skeleton = new Float32Array(visible.length * 9);
+    for (let index = 0; index < visible.length; index += 1) {
+      const edge = visible[index];
+      skeleton.set(edge.from, index * 9);
+      skeleton.set(edge.control, index * 9 + 3);
+      skeleton.set(edge.to, index * 9 + 6);
+    }
+    geometry.setAttribute('aSkeleton', new THREE.BufferAttribute(skeleton, 3));
     return geometry;
   }, [visible, selectedId, activeIds, color, pulse, perEdge]);
 
@@ -311,39 +321,11 @@ export function ScenePaths({
   );
 
   const timeRef = useRef(0);
-  const skeletonRef = useRef<THREE.Vector3[]>([new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()]);
   useFrame((state, delta) => {
     timeRef.current += delta;
-    if (pulseMaterial && pulseGeometry) {
+    if (pulseMaterial) {
       pulseMaterial.uniforms.uTime.value = timeRef.current;
       pulseMaterial.uniforms.uDpr.value = state.viewport.dpr;
-
-      // Every frame, recompute each edge's animated control point from the
-      // camera-relative start/end, so the travelling packets ride along with
-      // the camera instead of being baked into camera space at birth.
-      const skeleton = pulseGeometry.getAttribute('aSkeleton');
-      if (skeleton) {
-        const skel = skeleton.array as Float32Array;
-        let cursor = 0;
-        for (let i = 0; i < visible.length; i += 1) {
-          const edge = visible[i];
-          const start = skeletonRef.current[0].set(edge.from[0], edge.from[1], edge.from[2]);
-          const end = skeletonRef.current[1].set(edge.to[0], edge.to[1], edge.to[2]);
-          skel[cursor * 3] = start.x;
-          skel[cursor * 3 + 1] = start.y;
-          skel[cursor * 3 + 2] = start.z;
-          cursor += 1;
-          skel[cursor * 3] = edge.control[0];
-          skel[cursor * 3 + 1] = edge.control[1];
-          skel[cursor * 3 + 2] = edge.control[2];
-          cursor += 1;
-          skel[cursor * 3] = end.x;
-          skel[cursor * 3 + 1] = end.y;
-          skel[cursor * 3 + 2] = end.z;
-          cursor += 1;
-        }
-        skeleton.needsUpdate = true;
-      }
     }
   });
 

@@ -75,6 +75,19 @@ const FRAGMENT = /* glsl */ `
     return value;
   }
 
+  // Three octaves for the finest radial banding only: at that frequency the
+  // fourth octave is far below a pixel and only costs 8 hashes per sample.
+  float fbm3fine(vec3 p) {
+    float value = 0.0;
+    float amplitude = 0.5;
+    for (int i = 0; i < 3; i += 1) {
+      value += amplitude * noise3(p);
+      p = p * 2.07 + vec3(1.7, 9.2, 3.1);
+      amplitude *= 0.5;
+    }
+    return value * 1.0714; // same 0..0.9375 amplitude and mean as the 4-octave version
+  }
+
   // Muted blackbody-ish ramp: ember red -> deep orange -> amber -> pale gold.
   vec3 temperatureColor(float t) {
     t = clamp(t, 0.0, 1.0);
@@ -108,7 +121,7 @@ const FRAGMENT = /* glsl */ `
 
     // Sheared streaks with fine radial banding.
     float broad = fbm3(vec3(ring * 1.4, r * 2.2 + inflow));
-    float fine = fbm3(vec3(ring * 2.2, r * 6.5 + 4.0 + inflow * 1.6));
+    float fine = fbm3fine(vec3(ring * 2.2, r * 6.5 + 4.0 + inflow * 1.6));
     float gas = smoothstep(0.3, 0.8, broad * 0.55 + fine * 0.5);
     float lanes = 0.7 + 0.3 * smoothstep(0.3, 0.7, noise3(vec3(ring * 0.6, r * 13.0 + inflow * 2.0)));
 
@@ -172,9 +185,11 @@ const FRAGMENT = /* glsl */ `
       }
       if (r > BOUND + 0.01 && dot(pos, dir) > 0.0) break;
 
-      // Small steps near the hole, larger ones far away.
-      float dt = clamp(0.045 * r * r, 0.03, 0.6);
-      vec3 accel = -1.5 * h2 * pos / (r2 * r2 * r);
+      // Small steps near the hole, larger ones far away. r * r is exactly r2,
+      // and one inversesqrt replaces the sqrt plus the r^5 division.
+      float dt = clamp(0.045 * r2, 0.03, 0.6);
+      float ir = inversesqrt(r2);
+      vec3 accel = -1.5 * h2 * ir * ir * ir * ir * ir * pos;
       vec3 nextDir = dir + accel * dt;
       vec3 nextPos = pos + nextDir * dt;
 
@@ -187,11 +202,15 @@ const FRAGMENT = /* glsl */ `
         if (alpha > 0.995) break;
       }
 
-      // Faint glowing gas hugging the disk plane, for depth.
-      float rho = length(nextPos.xz);
-      haze += exp(-abs(nextPos.y) * 3.5) *
-        smoothstep(DISK_IN, DISK_IN + 1.0, rho) *
-        (1.0 - smoothstep(4.0, DISK_OUT, rho)) * dt * 0.012;
+      // Faint glowing gas hugging the disk plane, for depth. Beyond two units
+      // of the plane the term is wholly invisible (exp(-7) * 0.012), so skip
+      // its exp/smoothstep work instead of evaluating it on every step.
+      if (abs(nextPos.y) < 2.0) {
+        float rho = length(nextPos.xz);
+        haze += exp(-abs(nextPos.y) * 3.5) *
+          smoothstep(DISK_IN, DISK_IN + 1.0, rho) *
+          (1.0 - smoothstep(4.0, DISK_OUT, rho)) * dt * 0.012;
+      }
 
       pos = nextPos;
       dir = nextDir;

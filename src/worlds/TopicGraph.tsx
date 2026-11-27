@@ -1298,7 +1298,15 @@ export function TopicGraph({
     <Canvas
       camera={{ position: [0, 1250, 1450], fov: 52, near: 0.05, far: 40000 }}
       style={{ position: 'absolute', inset: 0, background: '#000000' }}
-      gl={{ antialias: true, alpha: false }}
+      // Every layer here is additive glow that already multiplies by uDpr, so
+      // the 2x cap costs no visible clarity while halving fill on 3x panels.
+      dpr={[1, 2]}
+      gl={{
+        antialias: true,
+        alpha: false,
+        stencil: false,
+        powerPreference: 'high-performance',
+      }}
     >
       <color attach="background" args={['#000000']} />
       <CameraController focus={focus} view={view} />

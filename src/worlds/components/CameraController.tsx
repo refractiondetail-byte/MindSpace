@@ -51,6 +51,8 @@ function smootherstep(x: number): number {
 const scratchQuat = new THREE.Quaternion();
 const identityQuat = new THREE.Quaternion();
 const scratchVec = new THREE.Vector3();
+const scratchVecB = new THREE.Vector3();
+const scratchShift = new THREE.Vector3();
 
 /** Spherical interpolation between two unit vectors. */
 function slerpDirection(from: THREE.Vector3, to: THREE.Vector3, t: number, out: THREE.Vector3) {
@@ -185,7 +187,7 @@ export function CameraController({ focus, view }: CameraControllerProps) {
         current.hump * Math.sin(Math.PI * zoomT);
       const distance = Math.exp(logDistance);
 
-      const direction = slerpDirection(current.fromDirection, current.toDirection, zoomT, new THREE.Vector3());
+      const direction = slerpDirection(current.fromDirection, current.toDirection, zoomT, scratchVecB);
       camera.position.copy(target).addScaledVector(direction, distance);
       controls.target.copy(target);
 
@@ -216,7 +218,7 @@ export function CameraController({ focus, view }: CameraControllerProps) {
     const ride = following.current;
     if (ride) {
       const now = ride.object.getWorldPosition(scratchVec);
-      const shift = now.clone().sub(ride.last);
+      const shift = scratchShift.copy(now).sub(ride.last);
       if (shift.lengthSq() > 0) {
         camera.position.add(shift);
         controls.target.add(shift);

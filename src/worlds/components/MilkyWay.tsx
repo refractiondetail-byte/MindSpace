@@ -82,7 +82,9 @@ const STAR_VERTEX = /* glsl */ `
       energy = max((px * px) / (minPx * minPx), 0.012);
       px = minPx;
     }
-    px = min(px, 9.0 * uDpr);
+    // Tighter cap than before: a star that skims the lens is already faded
+    // out by nearFade, so a smaller ceiling only removes wasted fill rate.
+    px = min(px, 7.0 * uDpr);
 
     // Don't let a star balloon into a blob when the camera skims past it.
     float nearFade = smoothstep(0.4, 3.0, dist);
@@ -200,12 +202,18 @@ const CLOUD_VERTEX = /* glsl */ `
     float px = aSize * uPixelScale / dist;
 
     // Fade clouds out as the camera enters them, and cap their screen size.
+    // The cap is deliberately modest (a 282k-pixel quad of 4-octave noise per
+    // cloud is what made close fly-throughs crawl) and, crucially, a cloud
+    // fades all the way to zero just past it instead of sitting clamped at
+    // 35% as a screen-filling additive slab. Cloud sprites at the resting
+    // zoom are far below the cap, so the wide shot is untouched.
     float nearFade = smoothstep(aSize * 0.5, aSize * 2.2, dist);
-    float capFade = 1.0 - smoothstep(180.0 * uDpr, 256.0 * uDpr, px);
+    float capPx = 160.0 * uDpr;
+    float capFade = 1.0 - smoothstep(capPx, capPx * 2.4, px);
 
-    gl_PointSize = clamp(px, 1.0, 256.0 * uDpr);
+    gl_PointSize = clamp(px, 1.0, capPx);
     vColor = aColor;
-    vAlpha = aAlpha * nearFade * mix(0.35, 1.0, capFade);
+    vAlpha = aAlpha * nearFade * capFade;
     vSeed = aSeed;
   }
 `;
@@ -375,10 +383,15 @@ const DISK_GLOW_FRAGMENT = /* glsl */ `
     if (r > uRadius * 1.1) discard;
     float angle = atan(-vPlane.y, vPlane.x);
     float phase = angle - log(max(r, uCore) / uCore) / uPitch;
-    float arms = pow(0.5 + 0.5 * cos(4.0 * phase), 3.0);
+    // x^3 written as two multiplies: no reason to pay for pow() per pixel.
+    float armWave = 0.5 + 0.5 * cos(4.0 * phase);
+    float arms = armWave * armWave * armWave;
     float armMask = smoothstep(uCore * 0.6, uCore * 2.0, r);
     float density = exp(-r / 300.0) * (0.35 + 0.65 * mix(1.0, arms, armMask));
     density *= 1.0 - smoothstep(uRadius * 0.7, uRadius * 1.1, r);
+    // This plane covers the whole disk, so when the camera is inside it the
+    // invisible outer fringe would still blend every pixel. Skip it instead.
+    if (density * uIntensity < 0.002) discard;
     vec3 warm = vec3(1.0, 0.82, 0.6);
     vec3 cool = vec3(0.62, 0.72, 1.0);
     vec3 color = mix(warm, cool, smoothstep(80.0, 500.0, r) * arms);
@@ -513,11 +526,18 @@ export function MilkyWay({ starCount = 200000, stars }: MilkyWayProps) {
     [starGeometry, nebulae, dust, starMaterial, nebulaMaterial, dustMaterial, diskGlowMaterial, bulgeMaterial],
   );
 
+  // Hoisted so the per-frame uniform pass allocates nothing.
+  const pixelMaterials = useMemo(
+    () => [starMaterial, nebulaMaterial, dustMaterial],
+    [starMaterial, nebulaMaterial, dustMaterial],
+  );
+
   useFrame((state) => {
     const camera = state.camera as THREE.PerspectiveCamera;
     const dpr = state.viewport.dpr;
     const pixelScale = (state.size.height * dpr) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
-    for (const material of [starMaterial, nebulaMaterial, dustMaterial]) {
+    for (let i = 0; i < pixelMaterials.length; i += 1) {
+      const material = pixelMaterials[i];
       material.uniforms.uPixelScale.value = pixelScale;
       material.uniforms.uDpr.value = dpr;
     }
