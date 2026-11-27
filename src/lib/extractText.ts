@@ -1,6 +1,7 @@
 import JSZip from 'jszip';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import type { DocumentExtractionStatus } from '../core/types';
+import { parsePptxDeck } from './slides';
 import { compressImageForUpload, fileToBase64 } from './supabaseStorage';
 
 /**
@@ -10,7 +11,7 @@ import { compressImageForUpload, fileToBase64 } from './supabaseStorage';
  * every uploaded file is read locally before a request is made:
  *  - PDF   → per-page text layer via pdf.js
  *  - DOCX  → `word/document.xml` from the OOXML zip
- *  - PPTX  → `ppt/slides/slideN.xml` text runs, grouped per slide
+ *  - PPTX  → per-slide text runs and speaker notes (shared parser in `slides.ts`)
  *  - TXT/MD/CSV/… → File.text()
  *  - images → no local OCR; the (compressed) image is sent for vision instead
  *
@@ -234,38 +235,32 @@ async function extractDocx(file: File): Promise<ExtractedDocument> {
   }
 }
 
-function slideNumber(path: string): number {
-  const match = /slide(\d+)\.xml$/.exec(path);
-  return match ? Number(match[1]) : 0;
-}
-
 async function extractPptx(file: File): Promise<ExtractedDocument> {
   const mimeType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
   try {
-    const zip = await JSZip.loadAsync(await file.arrayBuffer());
-    const slides = Object.keys(zip.files)
-      .filter((path) => /^ppt\/slides\/slide\d+\.xml$/.test(path))
-      .sort((a, b) => slideNumber(a) - slideNumber(b));
-
-    if (slides.length === 0) {
+    // The viewer draws the deck from the same parse, so stored slide text and
+    // speaker notes always match what the document window shows.
+    const deck = await parsePptxDeck(await file.arrayBuffer(), { includeImages: false });
+    if (deck.slides.length === 0) {
       return failure(file, 'pptx', 'empty', 'The presentation contained no slide parts.', mimeType);
     }
 
     const chunks: string[] = [];
     let chars = 0;
     let truncated = false;
+    let notesRead = 0;
 
-    for (const [index, path] of slides.entries()) {
-      // eslint-disable-next-line no-await-in-loop
-      const xml = await zip.file(path)?.async('string');
-      if (!xml) continue;
-      const runs = [...xml.matchAll(/<a:t>([\s\S]*?)<\/a:t>/g)]
-        .map((match) => decodeXmlEntities(match[1]).trim())
-        .filter(Boolean);
-      if (runs.length === 0) continue;
-      const slideText = tidy(runs.join('\n'));
-      chunks.push(`Slide ${index + 1}\n${slideText}`);
-      chars += slideText.length;
+    for (const slide of deck.slides) {
+      if (!slide.text && !slide.notes) continue;
+      const parts = [`Slide ${slide.index}`];
+      if (slide.text) parts.push(slide.text);
+      if (slide.notes) {
+        parts.push(`Speaker notes: ${slide.notes}`);
+        notesRead += 1;
+      }
+      const block = tidy(parts.join('\n'));
+      chunks.push(block);
+      chars += block.length;
       if (chars >= MAX_TEXT_CHARS_PER_FILE) {
         truncated = true;
         break;
@@ -274,8 +269,15 @@ async function extractPptx(file: File): Promise<ExtractedDocument> {
 
     const combined = clip(chunks.join('\n\n'), MAX_TEXT_CHARS_PER_FILE);
     if (!combined.text) {
-      return failure(file, 'pptx', 'empty', 'The slides contained no text runs (image-only deck).', mimeType);
+      return failure(
+        file,
+        'pptx',
+        'empty',
+        'The slides contained no text runs or speaker notes (image-only deck).',
+        mimeType,
+      );
     }
+    const wasTruncated = truncated || combined.truncated;
     return {
       name: file.name,
       mimeType,
@@ -284,10 +286,11 @@ async function extractPptx(file: File): Promise<ExtractedDocument> {
       status: 'ok',
       text: combined.text,
       chars: combined.text.length,
-      truncated: truncated || combined.truncated,
-      note:
-        truncated || combined.truncated
-          ? 'Only the first slides were read.'
+      truncated: wasTruncated,
+      note: wasTruncated
+        ? 'Only the first slides were read.'
+        : notesRead > 0
+          ? `Read ${deck.slides.length} slide${deck.slides.length === 1 ? '' : 's'} plus speaker notes.`
           : undefined,
     };
   } catch (error) {

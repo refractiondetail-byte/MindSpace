@@ -30,6 +30,8 @@ export interface MindItem extends ThoughtNode {
   unit?: string;
   relatedIds?: string[];
   storagePath?: string | null;
+  /** Link the moon was captured from (e.g. a Google Slides presentation). */
+  sourceUrl?: string | null;
   /** Whether the document's text layer could actually be read. */
   extractionStatus?: DocumentExtractionStatus;
   extractionNote?: string;

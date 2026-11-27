@@ -1,7 +1,14 @@
 import { useState, type FormEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { addAttachment, createThought, linkThoughts, listThoughts } from '../../core/repository';
+import {
+  addAttachment,
+  createThought,
+  linkThoughts,
+  listThoughts,
+  updateThought,
+} from '../../core/repository';
 import { REGIONS, REGION_META, type Region, type ThoughtNode } from '../../core/types';
+import { isGoogleSlidesUrl } from '../../lib/slides';
 import { formatBytes } from '../format';
 
 interface CapturePageProps {
@@ -66,10 +73,12 @@ export function CapturePage({ onClose, onSaved }: CapturePageProps) {
       for (const file of files) {
         await addAttachment(node.id, file);
       }
-      if (linkUrl.trim()) {
-        const url = linkUrl.trim();
-        const linkFile = new File([url], url, { type: 'text/uri-list' });
+      const link = linkUrl.trim();
+      if (link) {
+        const linkFile = new File([link], link, { type: 'text/uri-list' });
         await addAttachment(node.id, linkFile);
+        // Remember Slides links on the moon so the viewer can embed the deck.
+        if (isGoogleSlidesUrl(link)) await updateThought(node.id, { sourceUrl: link });
       }
 
       const related = thoughts

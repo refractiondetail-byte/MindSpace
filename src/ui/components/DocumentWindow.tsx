@@ -3,10 +3,12 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import { getAttachmentBlob } from '../../core/repository';
 import { detectKind } from '../../lib/extractText';
+import { isGoogleSlidesUrl, isLegacyPresentation } from '../../lib/slides';
 import type { SolarPlanet, SolarStar } from '../../lib/solar';
 import type { MindItem } from '../types';
 import { formatBytes } from '../format';
 import { FloatingWindow } from './FloatingWindow';
+import { GoogleSlidesView, PptxSlides } from './SlideViewer';
 import { TrashIcon } from './SolarGlyphs';
 
 interface DocumentWindowProps {
@@ -107,20 +109,67 @@ function PdfPages({ blob }: { blob: Blob }) {
   );
 }
 
+/** Old binary .ppt/.pps decks: explain instead of pretending to render. */
+function LegacyPresentationNotice({ name }: { name: string }) {
+  return (
+    <div className="p-4">
+      <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 p-3">
+        <p className="text-[11px] font-semibold text-amber-200">
+          PowerPoint 97–2003 (.ppt) cannot be drawn in the browser
+        </p>
+        <p className="mt-1 text-[11px] leading-relaxed text-amber-100/80">
+          {name} is the old binary format. Open it in PowerPoint or Google Slides and save it as a
+          .pptx (or PDF), then import it again — the new moon gets the same visual slide viewer and
+          its slide text stays available to the assistant.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** A captured link that is not a Slides deck: offer it as an outbound link. */
+function LinkCard({ url }: { url: string }) {
+  return (
+    <div className="p-4">
+      <div className="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+        <p className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Captured link</p>
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="mt-1 block break-all text-[12px] text-sky-300 hover:text-sky-200"
+        >
+          {url}
+        </a>
+        <p className="mt-2 text-[10px] text-slate-500">
+          Only the link is stored locally — its contents are not readable here, so the assistant
+          only knows the title and URL.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 /**
- * Floating document window: PDFs render as pages, images as images, and
- * DOCX/PPTX/TXT show the text that was actually extracted (with an explicit
- * notice when no text exists). Drag, minimize and maximize come from
- * FloatingWindow.
+ * Floating document window. PDFs render as pages; .pptx decks render slide by
+ * slide (Prev/Next + zoom + speaker notes); Google Slides links embed through
+ * `/embed`, with an explicit explanation when Google refuses to frame a private
+ * deck. Images render inline and other files show their extracted text. Drag,
+ * minimize and maximize come from FloatingWindow.
  */
 export function DocumentWindow({ moon, star, planet, onDelete, onClose }: DocumentWindowProps) {
   const attachment = moon.attachments[0] ?? null;
+  const linkAttachment =
+    moon.attachments.find(
+      (entry) => entry.mimeType === 'text/uri-list' || /^https?:\/\//i.test(entry.name),
+    ) ?? null;
   const blob = useLiveQuery(
     () => (attachment ? getAttachmentBlob(attachment.id) : Promise.resolve(undefined)),
     [attachment?.id],
   );
   const [url, setUrl] = useState<string | null>(null);
   const [imageError, setImageError] = useState(false);
+  const [linkUrl, setLinkUrl] = useState<string | null>(null);
 
   useEffect(() => {
     if (!blob) {
@@ -132,14 +181,50 @@ export function DocumentWindow({ moon, star, planet, onDelete, onClose }: Docume
     return () => URL.revokeObjectURL(objectUrl);
   }, [blob]);
 
+  // Captured links live either in `sourceUrl` or as the stored uri-list part.
+  useEffect(() => {
+    let cancelled = false;
+    const direct = moon.sourceUrl?.trim();
+    if (direct && /^https?:\/\//i.test(direct)) {
+      setLinkUrl(direct);
+      return;
+    }
+    if (!linkAttachment) {
+      setLinkUrl(null);
+      return;
+    }
+    setLinkUrl(null);
+    void getAttachmentBlob(linkAttachment.id)
+      .then(async (stored) => {
+        if (!stored || cancelled) return;
+        const text = (await stored.text()).trim();
+        if (!cancelled && /^https?:\/\//i.test(text)) setLinkUrl(text);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [moon.sourceUrl, linkAttachment?.id]);
+
   const kind = attachment ? detectKind(attachment.name, attachment.mimeType) : 'text';
   const status = extractionLabel(moon);
   const text = moon.extractedText?.trim() ?? '';
+  const slidesUrl = isGoogleSlidesUrl(linkUrl) ? linkUrl : null;
+  const attachmentIsLink = Boolean(attachment && linkAttachment?.id === attachment.id);
+  const legacyPresentation = isLegacyPresentation(attachment?.name);
+  const showTextDump =
+    Boolean(attachment && blob) &&
+    !slidesUrl &&
+    !legacyPresentation &&
+    kind !== 'pdf' &&
+    kind !== 'image' &&
+    kind !== 'pptx' &&
+    !attachmentIsLink;
 
   return (
     <FloatingWindow
       title={moon.title}
-      subtitle={`${star?.name ?? moon.topic ?? 'Unsorted'} › ${planet?.name ?? moon.unit ?? 'General'}${attachment ? ` · ${formatBytes(attachment.size)}` : ''}`}
+      subtitle={`${star?.name ?? moon.topic ?? 'Unsorted'} › ${planet?.name ?? moon.unit ?? 'General'}${attachment && !attachmentIsLink ? ` · ${formatBytes(attachment.size)}` : ''}${slidesUrl ? ' · Google Slides' : attachment && kind === 'pptx' ? ' · slides' : ''}`}
       accent={star?.color ?? moon.topicColor ?? '#c6d6e8'}
       onClose={onClose}
       initial={{
@@ -153,7 +238,7 @@ export function DocumentWindow({ moon, star, planet, onDelete, onClose }: Docume
           {moon.textChars ? <span>· {moon.textChars.toLocaleString()} chars</span> : null}
           {moon.extractionNote ? <span className="min-w-0 truncate">· {moon.extractionNote}</span> : null}
           <div className="ml-auto flex items-center gap-2">
-            {url && attachment && (
+            {url && attachment && !attachmentIsLink && (
               <a
                 href={url}
                 download={attachment.name}
@@ -175,7 +260,9 @@ export function DocumentWindow({ moon, star, planet, onDelete, onClose }: Docume
         </div>
       }
     >
-      {!attachment && (
+      {slidesUrl && <GoogleSlidesView url={slidesUrl} extractedText={text} />}
+
+      {!slidesUrl && !attachment && (
         <div className="p-4">
           <p className="mb-2 text-[11px] text-amber-300">
             This note has no stored file — showing only its text.
@@ -190,13 +277,17 @@ export function DocumentWindow({ moon, star, planet, onDelete, onClose }: Docume
         </div>
       )}
 
-      {attachment && !blob && (
+      {!slidesUrl && attachment && !blob && (
         <p className="p-4 text-[11px] text-slate-500">Loading file from local storage…</p>
       )}
 
-      {attachment && blob && kind === 'pdf' && <PdfPages blob={blob} />}
+      {!slidesUrl && attachment && blob && kind === 'pdf' && <PdfPages blob={blob} />}
 
-      {attachment && blob && kind === 'image' && (
+      {!slidesUrl && attachment && blob && kind === 'pptx' && (
+        <PptxSlides blob={blob} fallbackText={text} />
+      )}
+
+      {!slidesUrl && attachment && blob && kind === 'image' && (
         <div className="flex items-center justify-center p-3">
           {imageError ? (
             <p className="text-[11px] text-rose-300">This image could not be displayed.</p>
@@ -213,12 +304,18 @@ export function DocumentWindow({ moon, star, planet, onDelete, onClose }: Docume
         </div>
       )}
 
-      {attachment && blob && kind !== 'pdf' && kind !== 'image' && (
+      {!slidesUrl && legacyPresentation && <LegacyPresentationNotice name={attachment?.name ?? moon.title} />}
+
+      {!slidesUrl && !legacyPresentation && linkUrl && (attachmentIsLink || !attachment) && (
+        <LinkCard url={linkUrl} />
+      )}
+
+      {showTextDump && (
         <div className="p-4">
           {text ? (
             <>
               <p className="mb-2 text-[10px] uppercase tracking-[0.18em] text-slate-500">
-                {kind === 'pptx' ? 'Extracted slide text' : 'Extracted document text'}
+                Extracted document text
               </p>
               <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-slate-200">
                 {text}

@@ -5,6 +5,7 @@ import {
   type SolarPlanet,
   type SolarStar,
 } from '../../lib/solar';
+import { isGoogleSlidesUrl } from '../../lib/slides';
 import { formatBytes, formatDate } from '../format';
 import type { ItemContextHandlers } from '../hooks/useItemContextMenu';
 import type { MindItem } from '../types';
@@ -45,6 +46,9 @@ function extensionOf(moon: MindItem): string {
 }
 
 function fileBadge(moon: MindItem): { label: string; tone: string } {
+  if (isGoogleSlidesUrl(moon.sourceUrl)) {
+    return { label: 'SLID', tone: FILE_TONES.pptx };
+  }
   const ext = extensionOf(moon);
   if (!ext) return { label: 'NOTE', tone: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' };
   return {
@@ -188,7 +192,7 @@ function MoonRow({
   const badge = fileBadge(moon);
   const extraction = extractionTone(moon);
   const attachment = moon.attachments[0] ?? null;
-  const slides = extensionOf(moon) === 'pptx';
+  const slides = extensionOf(moon) === 'pptx' || isGoogleSlidesUrl(moon.sourceUrl);
 
   return (
     <li {...bindItem(targetFromMoon(moon))} className="item-touch">
