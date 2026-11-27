@@ -81,8 +81,11 @@ const VERTEX_SHADER = /* glsl */ `
   void main() {
     vColor = aColor;
     vAlpha = aAlpha;
-    // Positions are already in clip space: no camera transform applied.
-    gl_Position = vec4(position.xy, 0.0, 1.0);
+    // Positions are already in clip space: no camera transform applied. The z
+    // carried in position.z is the star's own normalised device depth, so a
+    // streak sitting behind a nebula or a planet is depth-tested away instead
+    // of painting over it.
+    gl_Position = vec4(position.xy, position.z, 1.0);
   }
 `;
 
@@ -144,7 +147,9 @@ export function StarWarp({
         vertexShader: VERTEX_SHADER,
         fragmentShader: FRAGMENT_SHADER,
         transparent: true,
-        depthTest: false,
+        // Depth *tested* (occluded by clouds and planets) but never written,
+        // so streaks do not cut chunks out of each other.
+        depthTest: true,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
         toneMapped: false,
@@ -247,6 +252,9 @@ export function StarWarp({
 
         const cx = work.current.x / work.current.w;
         const cy = work.current.y / work.current.w;
+        // Clip-space z of the star: written into both trail endpoints so the
+        // line is occluded exactly where the star itself is hidden.
+        const cz = work.current.z / work.current.w;
         const px = work.previous.x / work.previous.w;
         const py = work.previous.y / work.previous.w;
 
@@ -279,10 +287,10 @@ export function StarWarp({
         // and the visible part of the line is clipped at the viewport edge.
         pos[i6] = THREE.MathUtils.clamp(cx, -4, 4);
         pos[i6 + 1] = THREE.MathUtils.clamp(cy, -4, 4);
-        pos[i6 + 2] = 0;
+        pos[i6 + 2] = cz;
         pos[i6 + 3] = THREE.MathUtils.clamp(cx - dx * tail, -4, 4);
         pos[i6 + 4] = THREE.MathUtils.clamp(cy - dy * tail, -4, 4);
-        pos[i6 + 5] = 0;
+        pos[i6 + 5] = cz;
       }
 
       positionAttribute.needsUpdate = true;

@@ -262,6 +262,26 @@ const CLOUD_FRAGMENT = /* glsl */ `
   }
 `;
 
+/*
+ * Depth-only twin of a cloud sprite. It runs after the visible clouds and
+ * before the warp trails, writing the cloud's depth without touching colour,
+ * so streaks from stars the cloud is hiding get depth-tested away. Coverage
+ * follows the sprite's own alpha falloff and fades with it, so a cloud that
+ * has faded out (camera entering it, or the size cap) stops occluding too.
+ */
+const OCCLUDER_FRAGMENT = /* glsl */ `
+  uniform float uThreshold;
+  varying float vAlpha;
+
+  void main() {
+    vec2 p = gl_PointCoord - 0.5;
+    float d = length(p) * 2.0;
+    if (d > 1.0) discard;
+    float falloff = 1.0 - smoothstep(0.0, 1.0, d);
+    if (falloff * vAlpha < uThreshold) discard;
+  }
+`;
+
 const NEBULA_PINK = ['#ff5b7f', '#ff7a9c', '#e8507a'];
 const NEBULA_BLUE = ['#6f8cff', '#8fb0ff', '#7a7dff'];
 const NEBULA_WARM = ['#ffb27a', '#ff9e6a', '#ffcf9a'];
@@ -480,6 +500,42 @@ export function MilkyWay({ starCount = 200000, stars }: MilkyWayProps) {
     [],
   );
 
+  const nebulaOccluderMaterial = useMemo(
+    () =>
+      new THREE.ShaderMaterial({
+        uniforms: {
+          uPixelScale: { value: 700 },
+          uDpr: { value: 1 },
+          // A glowing nebula hides stars in its bright core only.
+          uThreshold: { value: 0.03 },
+        },
+        vertexShader: CLOUD_VERTEX,
+        fragmentShader: OCCLUDER_FRAGMENT,
+        transparent: true,
+        depthWrite: true,
+        colorWrite: false,
+      }),
+    [],
+  );
+
+  const dustOccluderMaterial = useMemo(
+    () =>
+      new THREE.ShaderMaterial({
+        uniforms: {
+          uPixelScale: { value: 700 },
+          uDpr: { value: 1 },
+          // Dark dust lanes block almost the whole sprite.
+          uThreshold: { value: 0.09 },
+        },
+        vertexShader: CLOUD_VERTEX,
+        fragmentShader: OCCLUDER_FRAGMENT,
+        transparent: true,
+        depthWrite: true,
+        colorWrite: false,
+      }),
+    [],
+  );
+
   const diskGlowMaterial = useMemo(
     () =>
       new THREE.ShaderMaterial({
@@ -520,16 +576,29 @@ export function MilkyWay({ starCount = 200000, stars }: MilkyWayProps) {
       starMaterial.dispose();
       nebulaMaterial.dispose();
       dustMaterial.dispose();
+      nebulaOccluderMaterial.dispose();
+      dustOccluderMaterial.dispose();
       diskGlowMaterial.dispose();
       bulgeMaterial.dispose();
     },
-    [starGeometry, nebulae, dust, starMaterial, nebulaMaterial, dustMaterial, diskGlowMaterial, bulgeMaterial],
+    [
+      starGeometry,
+      nebulae,
+      dust,
+      starMaterial,
+      nebulaMaterial,
+      dustMaterial,
+      nebulaOccluderMaterial,
+      dustOccluderMaterial,
+      diskGlowMaterial,
+      bulgeMaterial,
+    ],
   );
 
   // Hoisted so the per-frame uniform pass allocates nothing.
   const pixelMaterials = useMemo(
-    () => [starMaterial, nebulaMaterial, dustMaterial],
-    [starMaterial, nebulaMaterial, dustMaterial],
+    () => [starMaterial, nebulaMaterial, dustMaterial, nebulaOccluderMaterial, dustOccluderMaterial],
+    [starMaterial, nebulaMaterial, dustMaterial, nebulaOccluderMaterial, dustOccluderMaterial],
   );
 
   useFrame((state) => {
@@ -558,6 +627,10 @@ export function MilkyWay({ starCount = 200000, stars }: MilkyWayProps) {
       <points geometry={starGeometry} material={starMaterial} renderOrder={-1} raycast={NO_RAYCAST} />
       <points geometry={nebulae} material={nebulaMaterial} renderOrder={0} raycast={NO_RAYCAST} />
       <points geometry={dust} material={dustMaterial} renderOrder={0} raycast={NO_RAYCAST} />
+      {/* Depth-only pass after the visible clouds and before the warp trails
+          (renderOrder 9): clouds hide the star streaks behind them. */}
+      <points geometry={nebulae} material={nebulaOccluderMaterial} renderOrder={5} raycast={NO_RAYCAST} />
+      <points geometry={dust} material={dustOccluderMaterial} renderOrder={5} raycast={NO_RAYCAST} />
     </group>
   );
 }

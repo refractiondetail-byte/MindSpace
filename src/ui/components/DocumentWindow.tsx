@@ -16,6 +16,8 @@ interface DocumentWindowProps {
   star: SolarStar | null;
   planet: SolarPlanet | null;
   onDelete: () => void;
+  /** Step back up to the planet menu. */
+  onBack?: () => void;
   onClose: () => void;
 }
 
@@ -157,7 +159,14 @@ function LinkCard({ url }: { url: string }) {
  * deck. Images render inline and other files show their extracted text. Drag,
  * minimize and maximize come from FloatingWindow.
  */
-export function DocumentWindow({ moon, star, planet, onDelete, onClose }: DocumentWindowProps) {
+export function DocumentWindow({
+  moon,
+  star,
+  planet,
+  onDelete,
+  onBack,
+  onClose,
+}: DocumentWindowProps) {
   const attachment = moon.attachments[0] ?? null;
   const linkAttachment =
     moon.attachments.find(
@@ -226,6 +235,7 @@ export function DocumentWindow({ moon, star, planet, onDelete, onClose }: Docume
       title={moon.title}
       subtitle={`${star?.name ?? moon.topic ?? 'Unsorted'} › ${planet?.name ?? moon.unit ?? 'General'}${attachment && !attachmentIsLink ? ` · ${formatBytes(attachment.size)}` : ''}${slidesUrl ? ' · Google Slides' : attachment && kind === 'pptx' ? ' · slides' : ''}`}
       accent={star?.color ?? moon.topicColor ?? '#c6d6e8'}
+      onBack={onBack}
       onClose={onClose}
       initial={{
         width: Math.min(680, Math.round(window.innerWidth * 0.56)),

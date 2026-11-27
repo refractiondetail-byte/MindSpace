@@ -854,6 +854,12 @@ export default function App() {
     }
   }
 
+  /** Step up from a planet menu to the star menu. */
+  function collapsePlanet() {
+    setExpandedPlanet(null);
+    setSelectedPlanetKey(null);
+  }
+
   return (
     <main className="relative h-[100dvh] w-full overflow-hidden bg-[#000000] text-zinc-100">
       <div className="absolute inset-x-0 top-0 z-30 flex flex-wrap items-center gap-2 bg-transparent px-3 py-2">
@@ -913,13 +919,16 @@ export default function App() {
         />
       )}
 
-      {solarStar && (
+      {/* One panel at a time, one level deeper at a time: star → planet →
+          document, with the back arrow stepping up the same path. */}
+      {solarStar && !activeMoon && (
         <SolarPanel
           star={solarStar}
           expandedPlanet={expandedPlanet}
           onTogglePlanet={togglePlanet}
           onOpenMoon={openMoon}
           onDeletePlanet={(planet) => requestDelete(targetFromPlanet(planet))}
+          onBack={expandedPlanet ? collapsePlanet : undefined}
           onClose={() => {
             setActiveStar(null);
             setSelectedPlanetKey(null);
@@ -933,6 +942,7 @@ export default function App() {
           star={activeMoonStar}
           planet={activeMoonPlanet}
           onDelete={() => requestDelete(targetFromMoon(activeMoon, activeMoonPlanet))}
+          onBack={view === 'galaxy' && activeStar ? () => setActiveMoonId(null) : undefined}
           onClose={() => setActiveMoonId(null)}
         />
       )}

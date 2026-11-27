@@ -10,6 +10,8 @@ interface SolarPanelProps {
   onTogglePlanet: (planet: SolarPlanet) => void;
   onOpenMoon: (moon: MindItem) => void;
   onDeletePlanet: (planet: SolarPlanet) => void;
+  /** Step back up to the star menu; shown only while a planet is open. */
+  onBack?: () => void;
   onClose: () => void;
 }
 
@@ -54,6 +56,7 @@ export function SolarPanel({
   onTogglePlanet,
   onOpenMoon,
   onDeletePlanet,
+  onBack,
   onClose,
 }: SolarPanelProps) {
   return (
@@ -61,6 +64,7 @@ export function SolarPanel({
       title={`★ ${star.name}`}
       subtitle={`${star.planets.length} planet${star.planets.length === 1 ? '' : 's'} · ${star.moonCount} moon${star.moonCount === 1 ? '' : 's'}`}
       accent={star.color}
+      onBack={onBack}
       onClose={onClose}
       initial={{ width: Math.min(560, Math.round(window.innerWidth * 0.48)), height: Math.min(640, Math.round(window.innerHeight * 0.76)) }}
       bodyClassName="p-3"

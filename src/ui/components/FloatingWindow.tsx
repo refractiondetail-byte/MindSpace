@@ -12,6 +12,8 @@ interface FloatingWindowProps {
   subtitle?: ReactNode;
   toolbar?: ReactNode;
   accent?: string;
+  /** When present a back arrow is shown, stepping one level up the hierarchy. */
+  onBack?: () => void;
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
@@ -21,6 +23,8 @@ interface FloatingWindowProps {
 }
 
 let globalZ = 60;
+/** How long the open/close fade and slide takes, in milliseconds. */
+const EXIT_MS = 180;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -35,6 +39,7 @@ export function FloatingWindow({
   subtitle,
   toolbar,
   accent = '#c6d6e8',
+  onBack,
   onClose,
   children,
   footer,
@@ -56,6 +61,50 @@ export function FloatingWindow({
   const dragging = useRef(false);
   const offset = useRef({ x: 0, y: 0 });
   const zRef = useRef(zIndex);
+
+  // Windows fade/slide in and out instead of snapping into place. Closing and
+  // going back both wait for the short exit transition before unmounting.
+  const reducedMotion =
+    typeof window !== 'undefined' &&
+    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
+  const [visible, setVisible] = useState(reducedMotion);
+  const closing = useRef(false);
+  const exitTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    // `closing` keeps an exit from being undone by the enter effect below.
+    if (visible || closing.current) return;
+    // Two frames so the hidden style paints before the transition starts.
+    let inner = 0;
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => setVisible(true));
+    });
+    return () => {
+      cancelAnimationFrame(outer);
+      cancelAnimationFrame(inner);
+    };
+  }, [visible]);
+
+  useEffect(
+    () => () => {
+      if (exitTimer.current !== null) window.clearTimeout(exitTimer.current);
+    },
+    [],
+  );
+
+  const leave = useCallback(
+    (after: () => void) => {
+      if (closing.current) return;
+      closing.current = true;
+      if (reducedMotion) {
+        after();
+        return;
+      }
+      setVisible(false);
+      exitTimer.current = window.setTimeout(after, EXIT_MS);
+    },
+    [reducedMotion],
+  );
 
   const bringToFront = useCallback(() => {
     globalZ += 1;
@@ -110,6 +159,12 @@ export function FloatingWindow({
         ...frameStyle,
         borderColor: `${accent}33`,
         boxShadow: `0 24px 70px -30px rgba(0,0,0,0.9), inset 0 1px 0 rgba(255,255,255,0.05)`,
+        opacity: visible ? 1 : 0,
+        transform: visible ? 'translateY(0) scale(1)' : 'translateY(10px) scale(0.975)',
+        transition: reducedMotion
+          ? undefined
+          : `opacity ${EXIT_MS}ms ease-out, transform ${EXIT_MS}ms cubic-bezier(0.16, 1, 0.3, 1)`,
+        willChange: 'opacity, transform',
       }}
       onPointerDown={bringToFront}
       aria-label={typeof title === 'string' ? title : 'Window'}
@@ -122,6 +177,18 @@ export function FloatingWindow({
         onPointerUp={onDragEnd}
         onPointerCancel={onDragEnd}
       >
+        {onBack && (
+          <button
+            type="button"
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={() => leave(onBack)}
+            title="Back"
+            aria-label="Back"
+            className="shrink-0 rounded-md border border-white/10 px-1.5 py-0.5 text-[11px] leading-none text-slate-300 transition hover:border-white/25 hover:text-white"
+          >
+            ‹
+          </button>
+        )}
         <span
           className="h-2 w-2 shrink-0 rounded-full"
           style={{ backgroundColor: accent, boxShadow: `0 0 10px ${accent}` }}
@@ -158,7 +225,7 @@ export function FloatingWindow({
           </button>
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => leave(onClose)}
             aria-label="Close window"
             className="rounded-md border border-white/10 px-2 py-0.5 text-[10px] text-slate-300 transition hover:text-white"
           >
